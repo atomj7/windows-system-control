@@ -360,6 +360,21 @@ Sensor make_sensor(std::string id, std::string label, std::string unit, std::str
   return Sensor{std::move(id), std::move(label), std::move(unit), std::move(kind), value};
 }
 
+Fan header_fan(std::string id, std::string name) {
+  Fan fan;
+  fan.id = std::move(id);
+  fan.name = std::move(name);
+  fan.controllable = false;
+  fan.rpmKnown = false;
+  fan.dutyKnown = false;
+  fan.mode = "auto";
+  fan.minDuty = 30;
+  fan.duty = 40;
+  fan.source = "cpu_temp";
+  fan.curve = curve_balanced();
+  return fan;
+}
+
 const GUID kUsbDevice = {0xA5DCBF10, 0x6530, 0x11D2, {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED}};
 
 struct UsbHit {
@@ -733,6 +748,10 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     board.note =
         "Имя платы из SMBIOS. На B450 RGB Fusion обычно сидит на USB ITE (048D:8297), не на самой микросхеме SuperIO. Если "
         "контроллер найдётся, здесь появятся зоны цвета. Крыльчатки чипа платы — отдельно, через PawnIO.";
+    if (contains_ci(board.name, "B450M DS3H") || contains_ci(boardName, "B450M DS3H")) {
+      board.fans.push_back(header_fan("cpu_fan", "CPU_FAN"));
+      board.fans.push_back(header_fan("sys_fan1", "SYS_FAN1"));
+    }
     devices.push_back(std::move(board));
   }
 
@@ -928,9 +947,9 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   }
   if (board && board->backend != "fusion") {
     board->note =
-        "USB ITE 048D (RGB Fusion) на этой машине нет. Колодка RGB на B450M DS3H идёт через SuperIO — нужен открытый PawnIO. "
-        "Хаб корпусных вентиляторов с ИК-пультом в USB не попал: на шине периферия (Razer, клавиатура, Bluetooth, Wi‑Fi), не контроллер "
-        "подсветки. Если у хаба нет кабеля USB в системник, им управляет только пульт.";
+        "USB ITE 048D нет. 4-pin SYS_FAN1 — это ШИМ скорости хаба Aerocool, не цвет. Цвет у H66F и похожих — пульт (режим HUB) "
+        "или отдельный тонкий ARGB в колодку LED платы (режим MOBO). На части Gigabyte SYS_FAN это DC, не PWM: если обороты с "
+        "платы не слушаются, в BIOS поставь SYS_FAN1 в PWM. SuperIO Helios пока не читает: нужен открытый PawnIO и карта чипа.";
   }
 
   sample_cpu();
