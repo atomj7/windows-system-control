@@ -28,7 +28,7 @@ Section "Helios"
   WriteRegStr HKCU "Software\Helios" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayName" "Helios"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "Publisher" "Helios"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayVersion" "0.3.5"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayVersion" "0.3.6"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "NoModify" 1

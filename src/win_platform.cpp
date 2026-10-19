@@ -773,7 +773,9 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
       if (!field(modules[0], "Speed").empty()) memory.connection += " · " + field(modules[0], "Speed") + " МТ/с";
       memory.note =
           contains_ci(memory.name, "rgb")
-              ? "RGB на планках идёт по SMBus, не по USB. Helios зажжёт их, если запущен SDK-сервер OpenRGB на порту 6742."
+              ? "RGB на планках идёт по SMBus, не по USB. Helios сам шину памяти не пишет. Поставь OpenRGB, запусти его от "
+                "администратора, Settings → SDK Server → Start (порт 6742), затем «Обзор». Без прав SMBus OpenRGB тоже не "
+                "увидит JAD/XPG."
               : "Подсветка планок почти никогда не видна как отдельное USB-устройство. Её отдаёт контроллер платы или OpenRGB.";
       devices.push_back(std::move(memory));
     }

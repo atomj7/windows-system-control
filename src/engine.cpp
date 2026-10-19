@@ -168,9 +168,10 @@ bool same_usb(const Device& device, const OrgbController& controller) {
 bool same_openrgb_name(const Device& device, const OrgbController& controller) {
   const std::string blob = lower_copy(controller.name + " " + controller.vendor + " " + controller.description);
   if (device.kind == "memory") {
-    return blob.find("dram") != std::string::npos || blob.find("dimm") != std::string::npos || blob.find("ram") != std::string::npos ||
-           blob.find("trident") != std::string::npos || blob.find("vengeance") != std::string::npos ||
-           blob.find("fury") != std::string::npos || contains_ci(blob, device.name);
+    return blob.find("dram") != std::string::npos || blob.find("dimm") != std::string::npos || blob.find("xpg") != std::string::npos ||
+           blob.find("spectrix") != std::string::npos || blob.find("adata") != std::string::npos || blob.find("trident") != std::string::npos ||
+           blob.find("vengeance") != std::string::npos || blob.find("fury") != std::string::npos || blob.find("hyperx") != std::string::npos ||
+           contains_ci(blob, device.name);
   }
   if (device.kind == "motherboard") {
     return blob.find("fusion") != std::string::npos || blob.find("gigabyte") != std::string::npos ||

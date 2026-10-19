@@ -290,9 +290,11 @@ bool parse_orgb_controller(const uint8_t* bytes, size_t size, int protocol, Orgb
 
 OpenRgbBridge::Result OpenRgbBridge::discover() {
   Result result;
-  Socket socket = connect_local(6742, 250);
+  Socket socket = connect_local(6742, 1500);
   if (socket == kInvalidSocket) {
-    result.detail = "Мост не запущен. Устройства с прямым протоколом работают без него. Остальные можно отдать через SDK-сервер OpenRGB на порту 6742.";
+    result.detail =
+        "SDK-сервер OpenRGB на 127.0.0.1:6742 не отвечает. Скачай OpenRGB, запусти от администратора (SMBus планок без этого "
+        "часто не виден), Settings → SDK Server → Start, порт 6742. Потом в Helios нажми «Обзор».";
     return result;
   }
   struct Guard {
@@ -359,8 +361,8 @@ std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& z
   if (mode_index < 0 && zone.effect != "static") {
     return "У этого устройства в OpenRGB нет эффекта «" + zone.effect + "».";
   }
-  Socket socket = connect_local(6742, 250);
-  if (socket == kInvalidSocket) return "OpenRGB сейчас не слушает порт 6742.";
+  Socket socket = connect_local(6742, 1500);
+  if (socket == kInvalidSocket) return "OpenRGB сейчас не слушает порт 6742. Запусти SDK-сервер и повтори.";
   struct Guard {
     Socket socket;
     ~Guard() { close_socket(socket); }
