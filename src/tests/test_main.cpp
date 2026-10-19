@@ -1,5 +1,6 @@
 #include "curve.hpp"
 #include "engine.hpp"
+#include "ipc.hpp"
 #include "json.hpp"
 #include "mock_platform.hpp"
 #include "openrgb.hpp"
@@ -147,6 +148,53 @@ void test_engine() {
   expect(engine.state().dump().find("#112233") != std::string::npos, "zone color stored");
 }
 
+void test_ipc() {
+  const auto dir = std::filesystem::temp_directory_path() / "helios-ipc-test";
+  std::filesystem::remove_all(dir);
+  const Json live =
+      Json::object()
+          .set("platform", Json::object().set("mode", jstr("windows")).set("computer", jstr("PC")).set("detail", jstr("модуль")))
+          .set("devices", Json::array().push(Json::object()
+                                                 .set("id", jstr("gpu"))
+                                                 .set("name", jstr("RTX"))
+                                                 .set("kind", jstr("gpu"))
+                                                 .set("zones", Json::array().push(Json::object()
+                                                                                      .set("id", jstr("logo"))
+                                                                                      .set("name", jstr("Лого"))
+                                                                                      .set("color", jstr("#112233"))))
+                                                 .set("fans", Json::array().push(Json::object()
+                                                                                     .set("id", jstr("fan"))
+                                                                                     .set("name", jstr("GPU"))
+                                                                                     .set("rpm", jnum(1200))
+                                                                                     .set("controllable", jbool(true))))
+                                                 .set("sensors", Json::array().push(Json::object()
+                                                                                        .set("id", jstr("t"))
+                                                                                        .set("label", jstr("GPU"))
+                                                                                        .set("unit", jstr("°C"))
+                                                                                        .set("kind", jstr("temperature"))
+                                                                                        .set("value", jnum(61))))));
+  ipc_write_atomic(dir / "live.json", live.dump());
+  auto platform = make_ipc_platform(dir);
+  const auto devices = platform->scan([](const ScanStep&) {});
+  expect(!devices.empty() && devices[0].name == "RTX", "ipc scan reads live.json");
+  expect(!devices[0].sensors.empty() && devices[0].sensors[0].value == 61, "ipc sensors");
+  Device device = devices[0];
+  Zone zone = device.zones.front();
+  zone.color = Color{1, 2, 3};
+  expect(platform->set_zone(device, zone).empty(), "ipc zone queues without error");
+  Fan fan = device.fans.front();
+  fan.mode = "manual";
+  fan.duty = 40;
+  expect(platform->set_fan(device, fan).empty(), "ipc fan queues without error");
+  ipc_request_scan(dir);
+  auto commands = ipc_take_commands(dir / "commands");
+  expect(commands.size() == 3, "ipc queued zone, fan, scan");
+  expect(commands[0].find("op") && commands[0].find("op")->as_string() == "zone", "ipc zone op");
+  expect(commands[1].find("op") && commands[1].find("op")->as_string() == "fan", "ipc fan op");
+  expect(commands[2].find("op") && commands[2].find("op")->as_string() == "scan", "ipc scan op");
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -154,6 +202,7 @@ int main() {
   test_json();
   test_orgb();
   test_engine();
+  test_ipc();
   if (failures) {
     std::cerr << failures << " failed\n";
     return 1;

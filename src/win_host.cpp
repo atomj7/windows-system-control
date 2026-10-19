@@ -1,6 +1,7 @@
 #include "win_host.hpp"
 
 #include "engine.hpp"
+#include "ipc.hpp"
 #include "json.hpp"
 #include "log.hpp"
 
@@ -143,6 +144,7 @@ std::string to_hex(const Rgb& color) {
 
 struct Host {
   Engine* engine = nullptr;
+  HardwareSupervisor* hardware = nullptr;
   HWND window = nullptr;
   HWND list = nullptr;
   HWND title = nullptr;
@@ -228,7 +230,7 @@ void refresh_stage(Host* host, const Json& state) {
   const Json* device = selected_device(host, state);
   if (!device) {
     set_text(host->title, "Нет устройств");
-    set_text(host->note, "Нажми «Обзор», если список пуст.");
+    set_text(host->note, "Жду модуль железа. Если список пуст, нажми «Обзор» или смотри helios-worker.log.");
     set_text(host->sensors, "");
     return;
   }
@@ -453,6 +455,7 @@ LRESULT CALLBACK wnd_proc(HWND window, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       if (LOWORD(wParam) == kRescanId) {
+        if (host->hardware) host->hardware->request_scan();
         host->engine->requestScan();
         return 0;
       }
@@ -473,7 +476,11 @@ LRESULT CALLBACK wnd_proc(HWND window, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       break;
     case WM_TIMER:
-      if (host) refresh(host);
+      if (host) {
+        if (host->hardware) host->hardware->ensure();
+        if (host->engine && host->ids.empty()) host->engine->requestScan();
+        refresh(host);
+      }
       return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
@@ -491,7 +498,7 @@ HWND child(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, in
 
 }  // namespace
 
-int run_helios_window(Engine& engine) {
+int run_helios_window(Engine& engine, HardwareSupervisor* hardware) {
   INITCOMMONCONTROLSEX icc{};
   icc.dwSize = sizeof(icc);
   icc.dwICC = ICC_BAR_CLASSES;
@@ -499,6 +506,7 @@ int run_helios_window(Engine& engine) {
 
   Host host;
   host.engine = &engine;
+  host.hardware = hardware;
 
   WNDCLASSW wc{};
   wc.lpfnWndProc = wnd_proc;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(helios VERSION 0.1.0 LANGUAGES C CXX)
+project(helios VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,7 @@ add_library(helios_core
   src/http.cpp
   src/net.cpp
   src/log.cpp
+  src/ipc.cpp
 )
 target_include_directories(helios_core PUBLIC src)
 

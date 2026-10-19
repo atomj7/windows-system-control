@@ -12,6 +12,8 @@ UninstPage uninstConfirm
 UninstPage instfiles
 
 Section "Helios"
+  ExecWait '"$SYSDIR\taskkill.exe" /F /IM helios.exe /T'
+  Sleep 500
   SetOutPath "$INSTDIR"
   File "payload\helios.exe"
   File "payload\Helios.cmd"
@@ -25,7 +27,7 @@ Section "Helios"
   WriteRegStr HKCU "Software\Helios" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayName" "Helios"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "Publisher" "Helios"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayVersion" "0.1.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "DisplayVersion" "0.2.0"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helios" "NoModify" 1
@@ -33,6 +35,8 @@ Section "Helios"
 SectionEnd
 
 Section "Uninstall"
+  ExecWait '"$SYSDIR\taskkill.exe" /F /IM helios.exe /T'
+  Sleep 400
   Delete "$DESKTOP\Helios.lnk"
   Delete "$SMPROGRAMS\Helios\Helios.lnk"
   RMDir "$SMPROGRAMS\Helios"

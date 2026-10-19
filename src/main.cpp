@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "http.hpp"
+#include "ipc.hpp"
 #include "log.hpp"
 #include "net.hpp"
 #include "platform.hpp"
@@ -9,6 +10,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -21,20 +23,20 @@
 
 namespace {
 
-std::filesystem::path executable_dir(const char* argv0) {
+std::filesystem::path executable_path(const char* argv0) {
 #ifdef _WIN32
   wchar_t buffer[MAX_PATH];
   const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-  if (length > 0) return std::filesystem::path(std::wstring(buffer, length)).parent_path();
+  if (length > 0) return std::filesystem::path(std::wstring(buffer, length));
 #else
   char buffer[4096];
   const ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
   if (length > 0) {
     buffer[length] = 0;
-    return std::filesystem::path(buffer).parent_path();
+    return std::filesystem::path(buffer);
   }
 #endif
-  return std::filesystem::absolute(argv0).parent_path();
+  return std::filesystem::absolute(argv0);
 }
 
 std::string find_web_root(const std::filesystem::path& exeDir) {
@@ -69,6 +71,7 @@ int helios_main(int argc, char** argv) {
   int port = 47621;
   bool simulate = false;
   bool openBrowser = true;
+  bool worker = false;
   std::string dataDir;
 #ifdef _WIN32
   bool defaultSimulate = false;
@@ -93,32 +96,55 @@ int helios_main(int argc, char** argv) {
       simulate = true;
     } else if (arg == "--hardware") {
       simulate = false;
+    } else if (arg == "--worker") {
+      worker = true;
     } else if (arg == "--no-browser") {
       openBrowser = false;
     } else if (arg == "--help") {
-      std::cout << "Helios\n  --port 47621\n  --data data\n  --simulate\n  --hardware\n  --no-browser\n";
+      std::cout << "Helios\n  --port 47621\n  --data data\n  --simulate\n  --hardware\n  --worker\n  --no-browser\n";
       return 0;
     }
   }
 
   try {
-    const auto exeDir = executable_dir(argc > 0 ? argv[0] : "");
+    const auto exePath = executable_path(argc > 0 ? argv[0] : "");
+    const auto exeDir = exePath.parent_path();
 #ifdef _WIN32
     SetCurrentDirectoryW(exeDir.wstring().c_str());
     SetUnhandledExceptionFilter(crash_filter);
 #endif
+    if (dataDir.empty()) dataDir = (exeDir / "data").string();
+
+    if (worker) {
+      log_open(exeDir / "helios-worker.log");
+      log_info("модуль железа из " + exeDir.string());
+      return run_hardware_worker(dataDir, simulate);
+    }
+
     log_open(exeDir / "helios.log");
     if (!net_startup()) {
       show_fatal("Не удалось поднять сетевой стек Windows.");
       return 1;
     }
     log_info("старт из " + exeDir.string());
-    if (dataDir.empty()) dataDir = (exeDir / "data").string();
     const std::string web = find_web_root(exeDir);
     log_info(std::string("режим ") + (simulate ? "стенд" : "железо") + ", интерфейс " + web);
 
-    auto platform = make_platform(simulate);
+#ifdef _WIN32
+    std::unique_ptr<HardwareSupervisor> hardware;
+    std::unique_ptr<Platform> platform;
+    if (simulate) {
+      platform = make_platform(true);
+    } else {
+      hardware = std::make_unique<HardwareSupervisor>(exePath, dataDir);
+      hardware->ensure();
+      platform = make_ipc_platform(dataDir);
+      log_info("окно не грузит NVML и DXGI: железо в helios.exe --worker");
+    }
     Engine engine(std::move(platform), dataDir);
+#else
+    Engine engine(make_platform(simulate), dataDir);
+#endif
     engine.start();
     const std::string url = "http://127.0.0.1:" + std::to_string(port);
     int listenCode = 0;
@@ -135,10 +161,11 @@ int helios_main(int argc, char** argv) {
 
 #ifdef _WIN32
     (void)openBrowser;
-    const int windowCode = run_helios_window(engine);
+    const int windowCode = run_helios_window(engine, hardware.get());
     engine.stop();
     interrupt_http();
     if (server.joinable()) server.join();
+    if (hardware) hardware->stop();
     if (listenCode != 0) {
       show_fatal("Не удалось открыть порт " + std::to_string(port) + ".\nСмотри helios.log в папке программы.");
       return listenCode;
@@ -153,9 +180,17 @@ int helios_main(int argc, char** argv) {
     return 0;
 #endif
   } catch (const std::exception& ex) {
+    if (worker) {
+      log_error(std::string("модуль железа остановился: ") + ex.what());
+      return 1;
+    }
     show_fatal(std::string("Helios остановился: ") + ex.what());
     return 1;
   } catch (...) {
+    if (worker) {
+      log_error("модуль железа остановился без текста ошибки.");
+      return 1;
+    }
     show_fatal("Helios остановился без текста ошибки.");
     return 1;
   }
