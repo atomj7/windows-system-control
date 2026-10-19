@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <objbase.h>
+#include <shellapi.h>
 
 #include "WebView2.h"
 
@@ -201,6 +202,33 @@ HMODULE load_webview_loader() {
 }
 
 }  // namespace
+
+bool helios_relaunch_elevated() {
+  wchar_t path[MAX_PATH];
+  if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return false;
+  const std::filesystem::path exe(path);
+  const std::wstring directory = exe.parent_path().wstring();
+  SHELLEXECUTEINFOW info{};
+  info.cbSize = sizeof(info);
+  info.fMask = SEE_MASK_NOCLOSEPROCESS;
+  info.lpVerb = L"runas";
+  info.lpFile = path;
+  info.lpParameters = L"--hardware";
+  info.lpDirectory = directory.c_str();
+  info.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&info)) {
+    log_error("Windows не подняла Helios от администратора, код " + std::to_string(GetLastError()));
+    return false;
+  }
+  if (info.hProcess) CloseHandle(info.hProcess);
+  log_info("запущен второй Helios с правами администратора");
+  return true;
+}
+
+void helios_close_window() {
+  HWND window = FindWindowW(L"HeliosHost", nullptr);
+  if (window) PostMessageW(window, WM_CLOSE, 0, 0);
+}
 
 int run_helios_window(const std::string& url, HardwareSupervisor* hardware) {
   const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

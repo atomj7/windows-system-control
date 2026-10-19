@@ -33,6 +33,18 @@ extern "C" {
 #include <string>
 #include <utility>
 
+bool windows_token_is_admin() {
+  BOOL admin = FALSE;
+  SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+  PSID group = nullptr;
+  if (!AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &group)) {
+    return false;
+  }
+  const BOOL ok = CheckTokenMembership(nullptr, group, &admin);
+  FreeSid(group);
+  return ok && admin == TRUE;
+}
+
 namespace {
 
 std::string wide_to_utf8(std::wstring_view text) {
@@ -206,14 +218,25 @@ std::string read_smbios_blurb() {
 }
 
 bool pawnio_open_path(const wchar_t* path, DWORD* error) {
-  HANDLE handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (handle != INVALID_HANDLE_VALUE) {
-    CloseHandle(handle);
-    return true;
+  const DWORD accesses[] = {GENERIC_READ | GENERIC_WRITE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED,
+                            FILE_GENERIC_READ | FILE_GENERIC_WRITE, FILE_READ_DATA | FILE_WRITE_DATA};
+  const DWORD shares[] = {FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0};
+  const DWORD flags[] = {FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED};
+  DWORD last = ERROR_FILE_NOT_FOUND;
+  for (DWORD access : accesses) {
+    for (DWORD share : shares) {
+      for (DWORD flag : flags) {
+        HANDLE handle = CreateFileW(path, access, share, nullptr, OPEN_EXISTING, flag, nullptr);
+        if (handle != INVALID_HANDLE_VALUE) {
+          CloseHandle(handle);
+          if (error) *error = 0;
+          return true;
+        }
+        last = GetLastError();
+      }
+    }
   }
-  if (error) *error = GetLastError();
+  if (error) *error = last;
   return false;
 }
 
@@ -295,9 +318,19 @@ DriverState pawnio_driver(const PawnioProbe& probe) {
   }
   if (probe.accessDenied) {
     driver.state = "unavailable";
-    driver.detail =
-        "PawnIO установлен, Windows не дала открыть устройство (часто нужны права администратора или ACL «для всех "
-        "пользователей» в установщике PawnIO). Helios его видит, SuperIO не читает.";
+    char code[16];
+    std::snprintf(code, sizeof(code), "%lu", static_cast<unsigned long>(probe.error ? probe.error : ERROR_ACCESS_DENIED));
+    if (windows_token_is_admin()) {
+      driver.detail =
+          "PawnIO установлен, Windows не открывает устройство даже с правами администратора (код " + std::string(code) +
+          "). Переустанови PawnIO 2.2+ и в установщике включи доступ для всех пользователей. SuperIO пока не читается.";
+    } else {
+      driver.action = "elevate";
+      driver.detail =
+          "PawnIO установлен, Windows ответила ACCESS_DENIED (код " + std::string(code) +
+          "). Нужны права администратора или ACL «для всех пользователей» в установщике PawnIO. Helios его видит, SuperIO не "
+          "читает.";
+    }
     return driver;
   }
   if (probe.installed) {
@@ -885,13 +918,14 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
                                             : "Счётчик загрузки процессора не открылся.",
                   pdhQuery_ ? "ok" : "warn"});
 
-  drivers_.push_back(DriverState{"hid", "HID", "ready", "Встроенный стек Windows. Им уходит подсветка и ШИМ NZXT."});
-  drivers_.push_back(DriverState{"nvml", "NVIDIA NVML", nvmlReady_ ? "ready" : "missing", nvmlReady_ ? nvml_.detail() : nvml_.detail()});
+  drivers_.push_back(DriverState{"hid", "HID", "ready", "Встроенный стек Windows. Им уходит подсветка и ШИМ NZXT.", ""});
+  drivers_.push_back(DriverState{"nvml", "NVIDIA NVML", nvmlReady_ ? "ready" : "missing", nvmlReady_ ? nvml_.detail() : nvml_.detail(), ""});
   const bool adl = library_present(L"atiadlxx.dll") || library_present(L"atiadlxy.dll");
   drivers_.push_back(DriverState{"adl", "AMD ADL", !amdSeen ? "skipped" : adl ? "ready" : "missing",
                                  !amdSeen ? "Видеокарта AMD не видна в DXGI."
                                           : adl ? "Библиотека драйвера AMD на месте. Её закрытые структуры пока не вызываются."
-                                                : "В DXGI есть AMD, а atiadlxx.dll не загрузилась."});
+                                                : "В DXGI есть AMD, а atiadlxx.dll не загрузилась.",
+                                 ""});
   const PawnioProbe pawn = probe_pawnio();
   const DriverState pawnDriver = pawnio_driver(pawn);
   drivers_.push_back(pawnDriver);
@@ -900,6 +934,7 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   const bool pawnSeen = pawn.opened || pawn.installed || pawn.accessDenied;
   report(ScanStep{"drivers", "Драйверы",
                   pawnOk ? "PawnIO на месте, устройство открывается."
+                         : pawn.accessDenied ? "PawnIO установлен, Windows не дала открыть устройство. В листе драйверов есть запуск от администратора."
                          : pawnSeen ? "PawnIO установлен, устройство пока не открылось."
                                     : "PawnIO нет, низкоуровневые обороты платы закрыты.",
                   pawnOk ? "ok" : "warn"});

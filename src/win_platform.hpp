@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+bool windows_token_is_admin();
+
 class WindowsPlatform : public Platform {
  public:
   WindowsPlatform();

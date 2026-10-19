@@ -72,6 +72,7 @@ export interface DriverInfo {
   name: string;
   state: "ready" | "missing" | "skipped" | "unavailable";
   detail: string;
+  action?: string;
 }
 
 export interface Profile {

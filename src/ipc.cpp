@@ -243,6 +243,7 @@ class IpcPlatform : public Platform {
         driver.name = js(&item, "name");
         driver.state = js(&item, "state");
         driver.detail = js(&item, "detail");
+        driver.action = js(&item, "action");
         drivers_.push_back(std::move(driver));
       }
     }

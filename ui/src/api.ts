@@ -18,6 +18,10 @@ export function rescan() {
   return fetch("/api/scan", { method: "POST" }).then(read);
 }
 
+export function elevate() {
+  return fetch("/api/elevate", { method: "POST" }).then(read);
+}
+
 export function patchZone(deviceId: string, zoneId: string, body: object) {
   return fetch(`/api/devices/${deviceId}/zones/${zoneId}`, {
     method: "PATCH",

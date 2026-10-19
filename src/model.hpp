@@ -92,6 +92,7 @@ struct DriverState {
   std::string name;
   std::string state;  // ready, missing, skipped, unavailable
   std::string detail;
+  std::string action;  // empty or "elevate"
 };
 
 struct BusDevice {

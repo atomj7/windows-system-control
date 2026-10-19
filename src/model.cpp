@@ -125,7 +125,8 @@ Json driver_json(const DriverState& driver) {
       .set("id", jstr(driver.id))
       .set("name", jstr(driver.name))
       .set("state", jstr(driver.state))
-      .set("detail", jstr(driver.detail));
+      .set("detail", jstr(driver.detail))
+      .set("action", jstr(driver.action));
 }
 
 Json profile_json(const Profile& profile) {

@@ -59,11 +59,11 @@ PlatformInfo MockPlatform::info() const {
 
 std::vector<DriverState> MockPlatform::drivers() const {
   return {
-      {"hid", "HID", "ready", "На стенде пакеты никуда не уходят. На Windows подсветка NZXT пишется через HID."},
-      {"nvml", "NVIDIA NVML", "skipped", "На стенде нет драйвера NVIDIA. На Windows библиотека берётся из уже установленного драйвера."},
-      {"adl", "AMD ADL", "skipped", "Видеокарта AMD на стенде не подключена."},
+      {"hid", "HID", "ready", "На стенде пакеты никуда не уходят. На Windows подсветка NZXT пишется через HID.", ""},
+      {"nvml", "NVIDIA NVML", "skipped", "На стенде нет драйвера NVIDIA. На Windows библиотека берётся из уже установленного драйвера.", ""},
+      {"adl", "AMD ADL", "skipped", "Видеокарта AMD на стенде не подключена.", ""},
       {"pawnio", "PawnIO", "missing",
-       "Нужен только на Windows, чтобы читать SuperIO: обороты и ШИМ корпусных вентиляторов. Helios сам драйвер ядра не ставит."},
+       "Нужен только на Windows, чтобы читать SuperIO: обороты и ШИМ корпусных вентиляторов. Helios сам драйвер ядра не ставит.", ""},
   };
 }
 

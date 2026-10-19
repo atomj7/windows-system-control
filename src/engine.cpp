@@ -319,7 +319,7 @@ void Engine::scanOnce() {
   }
 
   std::vector<DriverState> drivers = platform_->drivers();
-  drivers.push_back(DriverState{"openrgb", "OpenRGB", bridge.connected ? "ready" : "skipped", bridge.detail});
+  drivers.push_back(DriverState{"openrgb", "OpenRGB", bridge.connected ? "ready" : "skipped", bridge.detail, ""});
 
   {
     std::lock_guard lock(mu_);

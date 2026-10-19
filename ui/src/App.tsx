@@ -184,6 +184,17 @@ export function App() {
               <article className="driver" key={driver.id}>
                 <div className="spread"><b>{driver.name}</b><span className={`pill ${driver.state === "missing" ? "warn" : driver.state === "ready" ? "live" : ""}`}>{driverLabel[driver.state]}</span></div>
                 <p className="note">{driver.detail}</p>
+                {driver.action === "elevate" && (
+                  <button
+                    className="btn primary"
+                    onClick={() => {
+                      setNotice("Windows спросит права администратора. После согласия Helios откроется заново.");
+                      void run(() => api.elevate());
+                    }}
+                  >
+                    Запустить от администратора
+                  </button>
+                )}
               </article>
             ))}
           </div>

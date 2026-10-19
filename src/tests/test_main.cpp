@@ -3,6 +3,7 @@
 #include "ipc.hpp"
 #include "json.hpp"
 #include "mock_platform.hpp"
+#include "model.hpp"
 #include "openrgb.hpp"
 
 #include <chrono>
@@ -51,6 +52,8 @@ void test_json() {
   const Json stamp = jnum(1792400123.456);
   auto stamped = parse_json(stamp.dump());
   expect(stamped && std::abs(stamped->as_number() - 1792400123.456) < 0.001, "json keeps timestamp precision");
+  const Json driver = driver_json(DriverState{"pawnio", "PawnIO", "unavailable", "нет прав", "elevate"});
+  expect(driver.find("action") && driver.find("action")->as_string() == "elevate", "driver action serialize");
 }
 
 void write_u16(std::vector<uint8_t>& out, uint16_t value) {
@@ -131,6 +134,8 @@ void test_engine() {
   expect(dump.find("Z790 AORUS MASTER") != std::string::npos, "scan finds the board");
   expect(dump.find("Kraken Elite") != std::string::npos, "scan finds the cooler");
   expect(dump.find("\"scanning\":false") != std::string::npos, "scan finished");
+  expect(dump.find("\"id\":\"pawnio\"") != std::string::npos, "drivers include pawnio");
+  expect(dump.find("\"action\":\"elevate\"") == std::string::npos, "stand does not ask to elevate");
   engine.tick();
   const Json history = engine.history(60);
   const Json* series = history.find("series");
@@ -151,41 +156,44 @@ void test_engine() {
 void test_ipc() {
   const auto dir = std::filesystem::temp_directory_path() / "helios-ipc-test";
   std::filesystem::remove_all(dir);
-  const Json live =
-      Json::object()
-          .set("platform", Json::object().set("mode", jstr("windows")).set("computer", jstr("PC")).set("detail", jstr("модуль")))
-          .set("devices", Json::array().push(Json::object()
-                                                 .set("id", jstr("gpu"))
-                                                 .set("name", jstr("RTX"))
-                                                 .set("kind", jstr("gpu"))
-                                                 .set("zones", Json::array().push(Json::object()
-                                                                                      .set("id", jstr("logo"))
-                                                                                      .set("name", jstr("Лого"))
-                                                                                      .set("color", jstr("#112233"))))
-                                                 .set("fans", Json::array().push(Json::object()
-                                                                                     .set("id", jstr("fan"))
-                                                                                     .set("name", jstr("GPU"))
-                                                                                     .set("rpm", jnum(1200))
-                                                                                     .set("controllable", jbool(true))))
-                                                 .set("sensors", Json::array().push(Json::object()
-                                                                                        .set("id", jstr("t"))
-                                                                                        .set("label", jstr("GPU"))
-                                                                                        .set("unit", jstr("°C"))
-                                                                                        .set("kind", jstr("temperature"))
-                                                                                        .set("value", jnum(61))))));
+  const Json sensor = Json::object()
+                          .set("id", jstr("t"))
+                          .set("label", jstr("GPU"))
+                          .set("unit", jstr("°C"))
+                          .set("kind", jstr("temperature"))
+                          .set("value", jnum(61));
+  const Json gpuJson = Json::object()
+                           .set("id", jstr("gpu"))
+                           .set("name", jstr("RTX"))
+                           .set("kind", jstr("gpu"))
+                           .set("zones", Json::array().push(Json::object().set("id", jstr("logo")).set("name", jstr("Лого")).set("color", jstr("#112233"))))
+                           .set("fans", Json::array().push(Json::object().set("id", jstr("fan")).set("name", jstr("GPU")).set("rpm", jnum(1200)).set("controllable", jbool(true))))
+                           .set("sensors", Json::array().push(sensor));
+  const Json pawnio = Json::object()
+                          .set("id", jstr("pawnio"))
+                          .set("name", jstr("PawnIO"))
+                          .set("state", jstr("unavailable"))
+                          .set("detail", jstr("нет прав"))
+                          .set("action", jstr("elevate"));
+  const Json live = Json::object()
+                        .set("platform", Json::object().set("mode", jstr("windows")).set("computer", jstr("PC")).set("detail", jstr("модуль")))
+                        .set("devices", Json::array().push(gpuJson))
+                        .set("drivers", Json::array().push(pawnio));
   ipc_write_atomic(dir / "live.json", live.dump());
   auto platform = make_ipc_platform(dir);
   const auto devices = platform->scan([](const ScanStep&) {});
   expect(!devices.empty() && devices[0].name == "RTX", "ipc scan reads live.json");
   expect(!devices[0].sensors.empty() && devices[0].sensors[0].value == 61, "ipc sensors");
-  Device device = devices[0];
-  Zone zone = device.zones.front();
+  const auto drivers = platform->drivers();
+  expect(!drivers.empty() && drivers[0].id == "pawnio" && drivers[0].action == "elevate", "ipc drivers keep elevate action");
+  Device gpu = devices[0];
+  Zone zone = gpu.zones.front();
   zone.color = Color{1, 2, 3};
-  expect(platform->set_zone(device, zone).empty(), "ipc zone queues without error");
-  Fan fan = device.fans.front();
+  expect(platform->set_zone(gpu, zone).empty(), "ipc zone queues without error");
+  Fan fan = gpu.fans.front();
   fan.mode = "manual";
   fan.duty = 40;
-  expect(platform->set_fan(device, fan).empty(), "ipc fan queues without error");
+  expect(platform->set_fan(gpu, fan).empty(), "ipc fan queues without error");
   ipc_request_scan(dir);
   auto commands = ipc_take_commands(dir / "commands");
   expect(commands.size() == 3, "ipc queued zone, fan, scan");

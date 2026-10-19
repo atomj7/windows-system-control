@@ -6,10 +6,12 @@
 
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <sstream>
@@ -162,7 +164,7 @@ std::optional<Json> body_json(const std::string& body, std::string& error) {
   return parsed;
 }
 
-void handle(Socket socket, Engine& engine, const std::filesystem::path& webRoot) {
+void handle(Socket socket, Engine& engine, const std::filesystem::path& webRoot, const std::function<Json()>& elevate) {
   std::string method;
   std::string path;
   std::string query;
@@ -193,6 +195,16 @@ void handle(Socket socket, Engine& engine, const std::filesystem::path& webRoot)
   } else if (method == "POST" && path == "/api/scan") {
     engine.requestScan();
     send_json(socket, engine.state());
+  } else if (method == "POST" && path == "/api/elevate") {
+    if (!elevate) {
+      send_json(socket,
+                Json::object()
+                    .set("ok", jbool(false))
+                    .set("error", jstr("Запуск от администратора есть только в Windows-сборке.")),
+                400);
+    } else {
+      send_json(socket, elevate());
+    }
   } else if (parts.size() == 2 && parts[0] == "api" && parts[1] == "lighting" && method == "POST") {
     std::string error;
     auto json = body_json(body, error);
@@ -272,7 +284,7 @@ void interrupt_http() {
 }
 
 int serve_http(Engine& engine, const std::string& host, int port, const std::string& webRoot,
-               const std::function<void()>& ready) {
+               const std::function<void()>& ready, const std::function<Json()>& elevate) {
   if (!net_startup()) {
     log_error("сокеты Windows не поднялись");
     return 1;
@@ -292,7 +304,18 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
     log_error("неверный адрес прослушивания");
     return 1;
   }
-  if (bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 || listen(server, 32) != 0) {
+  bool bound = false;
+  for (int attempt = 0; attempt < 40; ++attempt) {
+    if (bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+      if (listen(server, 32) == 0) {
+        bound = true;
+        break;
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  if (!bound) {
 #ifdef _WIN32
     log_error("порт " + std::to_string(port) + " занят или закрыт, код " + std::to_string(WSAGetLastError()));
 #else
@@ -321,9 +344,9 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
 #endif
     Socket client = accept(server, reinterpret_cast<sockaddr*>(&clientAddress), &length);
     if (client == kInvalidSocket) continue;
-    std::thread([client, &engine, root] {
+    std::thread([client, &engine, root, elevate] {
       try {
-        handle(client, engine, root);
+        handle(client, engine, root, elevate);
       } catch (const std::exception& ex) {
         log_error(std::string("запрос: ") + ex.what());
         close_socket(client);

@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "http.hpp"
 #include "ipc.hpp"
+#include "json.hpp"
 #include "log.hpp"
 #include "net.hpp"
 #include "platform.hpp"
@@ -19,6 +20,7 @@
 
 #ifdef _WIN32
 #include "win_host.hpp"
+#include "win_platform.hpp"
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -154,19 +156,44 @@ int helios_main(int argc, char** argv) {
     std::mutex listenMu;
     std::condition_variable listenCv;
     bool listening = false;
-    std::thread server([&] {
-      listenCode = serve_http(engine, "127.0.0.1", port, web, [&] {
-        log_info("слушает " + url);
-        {
-          std::lock_guard lock(listenMu);
-          listening = true;
-        }
-        listenCv.notify_all();
-#ifndef _WIN32
-        (void)openBrowser;
-        std::cout << "Helios слушает " << url << "\n";
+#ifdef _WIN32
+    const auto elevate = []() -> Json {
+      if (windows_token_is_admin()) {
+        return Json::object()
+            .set("ok", jbool(false))
+            .set("error",
+                 jstr("Helios уже с правами администратора. Переустанови PawnIO 2.2+ и в установщике включи доступ для всех "
+                      "пользователей."));
+      }
+      if (!helios_relaunch_elevated()) {
+        return Json::object()
+            .set("ok", jbool(false))
+            .set("error", jstr("Windows не дала поднять права. Если запрос UAC отменили — так и должно быть."));
+      }
+      helios_close_window();
+      return Json::object().set("ok", jbool(true)).set("restarting", jbool(true));
+    };
 #endif
-      });
+    std::thread server([&] {
+      listenCode = serve_http(
+          engine, "127.0.0.1", port, web,
+          [&] {
+            log_info("слушает " + url);
+            {
+              std::lock_guard lock(listenMu);
+              listening = true;
+            }
+            listenCv.notify_all();
+#ifndef _WIN32
+            (void)openBrowser;
+            std::cout << "Helios слушает " << url << "\n";
+#endif
+          }
+#ifdef _WIN32
+          ,
+          elevate
+#endif
+      );
       if (listenCode != 0) log_error("HTTP-служба остановилась с кодом " + std::to_string(listenCode));
       listenCv.notify_all();
     });
@@ -175,7 +202,7 @@ int helios_main(int argc, char** argv) {
     (void)openBrowser;
     {
       std::unique_lock lock(listenMu);
-      listenCv.wait_for(lock, std::chrono::seconds(3), [&] { return listening || listenCode != 0; });
+      listenCv.wait_for(lock, std::chrono::seconds(12), [&] { return listening || listenCode != 0; });
     }
     if (!listening) {
       engine.stop();
