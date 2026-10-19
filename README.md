@@ -32,14 +32,37 @@ Helios не ставит WinRing0 и не пишет регистры Super I/O.
 
 ## Сборка на Windows
 
-Поставь Visual Studio 2022 (рабочая нагрузка C++), CMake и Node.js. Клонируй репозиторий, например в `D:\myProjects\windows-system-control`, и из корня:
+`scripts/build.sh` — это bash для Linux. В PowerShell он ничего не собирает. Нужен `.\scripts\build.ps1`.
+
+Поставь:
+
+1. [Node.js LTS](https://nodejs.org/en/download)
+2. [CMake](https://cmake.org/download/) (галка Add CMake to PATH)
+3. [Visual Studio 2022 Community](https://visualstudio.microsoft.com/vs/community/) с нагрузкой **Разработка классических приложений на C++**
+
+Закрой и открой PowerShell, затем из корня репозитория:
 
 ```powershell
+cd D:\myProjects\windows-system-control
 .\scripts\build.ps1
+.\scripts\run.ps1
+```
+
+Либо вручную:
+
+```powershell
+cd ui
+npm install
+npm run build
+cd ..
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
 .\build\Release\helios.exe --hardware
 ```
 
-Если CMake положил `helios.exe` прямо в `build\`, запускай его оттуда. Для предпросмотра без железа: `helios.exe --simulate`.
+Открой http://127.0.0.1:47621 . Стенд без железа: `.\build\Release\helios.exe --simulate`.
+
+Если распаковал zip (`windows-system-control-main`), команды те же из этой папки. Логи Cursor (`AgentHostUpdater`, `ENOPRO`, `punycode`) к Helios не относятся.
 
 Кросс-сборка MinGW с Linux:
 
