@@ -5,12 +5,15 @@
 #include "net.hpp"
 #include "platform.hpp"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -148,28 +151,45 @@ int helios_main(int argc, char** argv) {
     engine.start();
     const std::string url = "http://127.0.0.1:" + std::to_string(port);
     int listenCode = 0;
+    std::mutex listenMu;
+    std::condition_variable listenCv;
+    bool listening = false;
     std::thread server([&] {
       listenCode = serve_http(engine, "127.0.0.1", port, web, [&] {
         log_info("слушает " + url);
+        {
+          std::lock_guard lock(listenMu);
+          listening = true;
+        }
+        listenCv.notify_all();
 #ifndef _WIN32
         (void)openBrowser;
         std::cout << "Helios слушает " << url << "\n";
 #endif
       });
       if (listenCode != 0) log_error("HTTP-служба остановилась с кодом " + std::to_string(listenCode));
+      listenCv.notify_all();
     });
 
 #ifdef _WIN32
     (void)openBrowser;
-    const int windowCode = run_helios_window(engine, hardware.get());
+    {
+      std::unique_lock lock(listenMu);
+      listenCv.wait_for(lock, std::chrono::seconds(3), [&] { return listening || listenCode != 0; });
+    }
+    if (!listening) {
+      engine.stop();
+      interrupt_http();
+      if (server.joinable()) server.join();
+      if (hardware) hardware->stop();
+      show_fatal("Не удалось открыть порт " + std::to_string(port) + ".\nСмотри helios.log в папке программы.");
+      return listenCode != 0 ? listenCode : 1;
+    }
+    const int windowCode = run_helios_window(url, hardware.get());
     engine.stop();
     interrupt_http();
     if (server.joinable()) server.join();
     if (hardware) hardware->stop();
-    if (listenCode != 0) {
-      show_fatal("Не удалось открыть порт " + std::to_string(port) + ".\nСмотри helios.log в папке программы.");
-      return listenCode;
-    }
     return windowCode;
 #else
     if (server.joinable()) server.join();

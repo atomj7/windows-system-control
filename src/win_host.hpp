@@ -1,6 +1,7 @@
 #pragma once
 
-class Engine;
+#include <string>
+
 class HardwareSupervisor;
 
-int run_helios_window(Engine& engine, HardwareSupervisor* hardware = nullptr);
+int run_helios_window(const std::string& url, HardwareSupervisor* hardware = nullptr);

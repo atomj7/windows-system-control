@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(helios VERSION 0.2.0 LANGUAGES C CXX)
+project(helios VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,6 +48,8 @@ if(WIN32)
     user32
     gdi32
     comctl32
+    advapi32
+    dwmapi
   )
 else()
   target_link_libraries(helios_core PUBLIC pthread)
@@ -60,7 +62,16 @@ else()
 endif()
 
 if(WIN32)
-  add_executable(helios WIN32 src/main.cpp src/win_host.cpp)
+  enable_language(RC)
+  if(MINGW)
+    set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> -O coff -I ${CMAKE_SOURCE_DIR}/src <FLAGS> -i <SOURCE> -o <OBJECT>")
+  endif()
+  add_executable(helios WIN32 src/main.cpp src/win_host.cpp src/helios.rc)
+  target_include_directories(helios PRIVATE src third_party/webview2/include)
+  add_custom_command(TARGET helios POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll"
+      "$<TARGET_FILE_DIR:helios>/WebView2Loader.dll")
 else()
   add_executable(helios src/main.cpp)
 endif()

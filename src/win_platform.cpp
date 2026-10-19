@@ -17,6 +17,7 @@
 #include <pdh.h>
 #include <setupapi.h>
 #include <wbemidl.h>
+#include <winsvc.h>
 
 #include <algorithm>
 #include <cmath>
@@ -199,11 +200,115 @@ std::string read_smbios_blurb() {
   return board.empty() ? bios : board;
 }
 
-bool pawnio_present() {
-  HANDLE handle = CreateFileW(L"\\\\.\\PawnIO", 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-  if (handle == INVALID_HANDLE_VALUE) return false;
-  CloseHandle(handle);
-  return true;
+bool pawnio_open_path(const wchar_t* path, DWORD* error) {
+  HANDLE handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(handle);
+    return true;
+  }
+  if (error) *error = GetLastError();
+  return false;
+}
+
+bool pawnio_file_exists(const wchar_t* pattern) {
+  wchar_t expanded[MAX_PATH];
+  if (!ExpandEnvironmentStringsW(pattern, expanded, MAX_PATH)) return false;
+  return GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES;
+}
+
+struct PawnioProbe {
+  bool opened = false;
+  bool accessDenied = false;
+  bool installed = false;
+  DWORD error = 0;
+  std::string where;
+};
+
+PawnioProbe probe_pawnio() {
+  PawnioProbe probe;
+  const wchar_t* devices[] = {L"\\\\?\\GLOBALROOT\\Device\\PawnIO", L"\\\\.\\PawnIO", L"\\\\.\\Global\\PawnIO"};
+  for (const wchar_t* device : devices) {
+    DWORD error = 0;
+    if (pawnio_open_path(device, &error)) {
+      probe.opened = true;
+      probe.installed = true;
+      probe.where = wide_to_utf8(device);
+      return probe;
+    }
+    probe.error = error;
+    if (error == ERROR_ACCESS_DENIED) probe.accessDenied = true;
+  }
+
+  SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+  if (manager) {
+    SC_HANDLE service = OpenServiceW(manager, L"PawnIO", SERVICE_QUERY_STATUS);
+    if (service) {
+      probe.installed = true;
+      SERVICE_STATUS status{};
+      if (QueryServiceStatus(service, &status) && status.dwCurrentState == SERVICE_RUNNING) {
+        probe.where = "служба PawnIO";
+      } else {
+        probe.where = "служба PawnIO (не запущена)";
+      }
+      CloseServiceHandle(service);
+    }
+    CloseServiceHandle(manager);
+  }
+
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\PawnIO", 0, KEY_READ | KEY_WOW64_64KEY, &key) ==
+      ERROR_SUCCESS) {
+    probe.installed = true;
+    if (probe.where.empty()) probe.where = "реестр службы";
+    RegCloseKey(key);
+  }
+
+  const wchar_t* files[] = {L"%ProgramFiles%\\PawnIO\\PawnIO.sys", L"%ProgramFiles%\\PawnIO\\PawnIOLib.dll",
+                            L"%ProgramFiles(x86)%\\PawnIO\\PawnIO.sys", L"%ProgramW6432%\\PawnIO\\PawnIO.sys",
+                            L"%ProgramFiles%\\PawnIO\\PawnIO.exe"};
+  for (const wchar_t* file : files) {
+    if (pawnio_file_exists(file)) {
+      probe.installed = true;
+      if (probe.where.empty()) probe.where = "файлы установки";
+      break;
+    }
+  }
+  return probe;
+}
+
+DriverState pawnio_driver(const PawnioProbe& probe) {
+  DriverState driver;
+  driver.id = "pawnio";
+  driver.name = "PawnIO";
+  if (probe.opened) {
+    driver.state = "ready";
+    driver.detail = "Драйвер открывается (" + probe.where +
+                    "). Регистры SuperIO Helios пока не пишет: сначала карта чипа платы, иначе крыльчатки можно остановить.";
+    return driver;
+  }
+  if (probe.accessDenied) {
+    driver.state = "unavailable";
+    driver.detail =
+        "PawnIO установлен, Windows не дала открыть устройство (часто нужны права администратора или ACL «для всех "
+        "пользователей» в установщике PawnIO). Helios его видит, SuperIO не читает.";
+    return driver;
+  }
+  if (probe.installed) {
+    driver.state = "unavailable";
+    char code[16];
+    std::snprintf(code, sizeof(code), "%lu", static_cast<unsigned long>(probe.error));
+    driver.detail = "PawnIO стоит (" + (probe.where.empty() ? std::string("служба или файлы") : probe.where) +
+                    "), а устройство не открылось, код " + code +
+                    ". После установки иногда нужен перезапуск Windows. WinRing0 Helios не использует.";
+    return driver;
+  }
+  driver.state = "missing";
+  driver.detail =
+      "Не найден ни драйвер, ни служба, ни файлы PawnIO. Helios не ставит драйверы ядра сам и не использует WinRing0: он в "
+      "блок-листе Microsoft. PawnIO — подписанная замена, её ставишь ты.";
+  return driver;
 }
 
 bool library_present(const wchar_t* name) {
@@ -679,12 +784,17 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
                                  !amdSeen ? "Видеокарта AMD не видна в DXGI."
                                           : adl ? "Библиотека драйвера AMD на месте. Её закрытые структуры пока не вызываются."
                                                 : "В DXGI есть AMD, а atiadlxx.dll не загрузилась."});
-  const bool pawn = pawnio_present();
-  drivers_.push_back(DriverState{
-      "pawnio", "PawnIO", pawn ? "ready" : "missing",
-      pawn ? "Драйвер открывается. Чтение регистров SuperIO подключу отдельно, после проверки чипа: запись в неверный регистр останавливает крыльчатки."
-           : "Не установлен. Helios не ставит драйверы ядра сам и не использует WinRing0: он в блок-листе Microsoft. PawnIO — подписанная замена, её ставишь ты."});
-  report(ScanStep{"drivers", "Драйверы", pawn ? "PawnIO на месте." : "PawnIO нет, низкоуровневые обороты платы закрыты.", pawn ? "ok" : "warn"});
+  const PawnioProbe pawn = probe_pawnio();
+  const DriverState pawnDriver = pawnio_driver(pawn);
+  drivers_.push_back(pawnDriver);
+  log_info(std::string("PawnIO: ") + pawnDriver.state + " — " + pawnDriver.detail);
+  const bool pawnOk = pawn.opened;
+  const bool pawnSeen = pawn.opened || pawn.installed || pawn.accessDenied;
+  report(ScanStep{"drivers", "Драйверы",
+                  pawnOk ? "PawnIO на месте, устройство открывается."
+                         : pawnSeen ? "PawnIO установлен, устройство пока не открылось."
+                                    : "PawnIO нет, низкоуровневые обороты платы закрыты.",
+                  pawnOk ? "ok" : "warn"});
   return devices;
 }
 

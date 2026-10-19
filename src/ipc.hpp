@@ -42,6 +42,7 @@ class HardwareSupervisor {
   std::filesystem::path exe_;
   std::filesystem::path dataDir_;
   HANDLE process_ = nullptr;
+  HANDLE job_ = nullptr;
   std::chrono::steady_clock::time_point lastSpawn_{};
   std::chrono::milliseconds backoff_{0};
 };

@@ -383,7 +383,17 @@ int run_hardware_worker(const std::filesystem::path& dataDir, bool simulate) {
 
 #ifdef _WIN32
 HardwareSupervisor::HardwareSupervisor(std::filesystem::path exe, std::filesystem::path dataDir)
-    : exe_(std::move(exe)), dataDir_(std::move(dataDir)) {}
+    : exe_(std::move(exe)), dataDir_(std::move(dataDir)) {
+  job_ = CreateJobObjectW(nullptr, nullptr);
+  if (job_) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+      CloseHandle(job_);
+      job_ = nullptr;
+    }
+  }
+}
 
 HardwareSupervisor::~HardwareSupervisor() { stop(); }
 
@@ -415,12 +425,16 @@ void HardwareSupervisor::ensure() {
   std::vector<wchar_t> buffer(cmd.begin(), cmd.end());
   buffer.push_back(0);
   lastSpawn_ = now;
-  if (!CreateProcessW(exe_.wstring().c_str(), buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+  if (!CreateProcessW(exe_.wstring().c_str(), buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
                       exe_.parent_path().wstring().c_str(), &si, &pi)) {
     log_error("не удалось запустить модуль железа");
     if (backoff_.count() <= 0) backoff_ = std::chrono::milliseconds(1000);
     return;
   }
+  if (job_ && !AssignProcessToJobObject(job_, pi.hProcess)) {
+    log_error("модуль железа не вошёл в job: при закрытии окна его придётся останавливать явно");
+  }
+  ResumeThread(pi.hThread);
   CloseHandle(pi.hThread);
   process_ = pi.hProcess;
   backoff_ = std::chrono::milliseconds(400);
@@ -428,11 +442,16 @@ void HardwareSupervisor::ensure() {
 }
 
 void HardwareSupervisor::stop() {
-  if (!process_) return;
-  ipc_write_atomic(dataDir_ / "worker.stop", "1");
-  if (WaitForSingleObject(process_, 1500) != WAIT_OBJECT_0) TerminateProcess(process_, 1);
-  CloseHandle(process_);
-  process_ = nullptr;
+  if (process_) {
+    ipc_write_atomic(dataDir_ / "worker.stop", "1");
+    if (WaitForSingleObject(process_, 1500) != WAIT_OBJECT_0) TerminateProcess(process_, 1);
+    CloseHandle(process_);
+    process_ = nullptr;
+  }
+  if (job_) {
+    CloseHandle(job_);
+    job_ = nullptr;
+  }
   std::error_code error;
   std::filesystem::remove(dataDir_ / "worker.stop", error);
 }

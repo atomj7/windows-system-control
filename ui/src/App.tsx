@@ -211,11 +211,76 @@ function DeviceButton({ device, active, tick, onClick }: { device: Device; activ
   const side = liveTemp != null ? `${formatNumber(liveTemp, 0)}°` : liveFan?.rpmKnown ? `${formatNumber(liveFan.rpm, 0)}` : device.hardware === "live" ? "●" : "";
   return (
     <button className={active ? "device active" : "device"} onClick={onClick}>
+      <span className="kind-icon" aria-hidden><KindIcon kind={device.kind} /></span>
       <i className="swatch" style={{ background: color }} />
       <span><b>{device.name}</b><small>{kindLabel[device.kind] ?? device.kind}</small></span>
       <em>{side}</em>
     </button>
   );
+}
+
+function KindIcon({ kind }: { kind: string }) {
+  const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  switch (kind) {
+    case "cpu":
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="7" y="7" width="10" height="10" rx="1.5" {...stroke} />
+          <path d="M9 4v3M12 4v3M15 4v3M9 17v3M12 17v3M15 17v3M4 9h3M4 12h3M4 15h3M17 9h3M17 12h3M17 15h3" {...stroke} />
+        </svg>
+      );
+    case "gpu":
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="3" y="7" width="18" height="11" rx="2" {...stroke} />
+          <circle cx="8.5" cy="12.5" r="2" {...stroke} />
+          <path d="M13 10h5M13 13h3M6 7V5M10 7V5" {...stroke} />
+        </svg>
+      );
+    case "motherboard":
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="4" y="4" width="16" height="16" rx="2" {...stroke} />
+          <rect x="7" y="7" width="6" height="6" rx="1" {...stroke} />
+          <path d="M16 8h1M16 11h1M8 16h8M8 19v-2" {...stroke} />
+        </svg>
+      );
+    case "cooler":
+      return (
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" {...stroke} />
+          <path d="M12 5v4M12 15v4M5 12h4M15 12h4M7.2 7.2l2.8 2.8M14 14l2.8 2.8M16.8 7.2 14 10M10 14l-2.8 2.8" {...stroke} />
+        </svg>
+      );
+    case "fan_controller":
+      return (
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" {...stroke} />
+          <path d="M12 12 16 8.5M12 12l-1.5 6M12 12 6.5 10" {...stroke} />
+        </svg>
+      );
+    case "memory":
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="3" y="8" width="18" height="8" rx="1.5" {...stroke} />
+          <path d="M6 8V6M9 8V6M12 8V6M15 8V6M18 8V6M6 16v2M18 16v2" {...stroke} />
+        </svg>
+      );
+    case "storage":
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="4" y="6" width="16" height="12" rx="2" {...stroke} />
+          <path d="M8 10h.01M8 14h8" {...stroke} />
+        </svg>
+      );
+    default:
+      return (
+        <svg viewBox="0 0 24 24">
+          <rect x="5" y="7" width="14" height="10" rx="2" {...stroke} />
+          <path d="M9 17v2M15 17v2" {...stroke} />
+        </svg>
+      );
+  }
 }
 
 function ScanScreen({ state, onEnter }: { state: AppState; onEnter: () => void }) {
