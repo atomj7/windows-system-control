@@ -1,0 +1,9 @@
+build/
+build-win/
+ui/node_modules/
+ui/dist/
+data/
+agent-tools/
+a.out
+*.user
+.DS_Store
