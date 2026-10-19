@@ -3,7 +3,10 @@
 #include "net.hpp"
 #include "util.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace {
 
@@ -13,6 +16,8 @@ constexpr uint32_t kPacketSetName = 50;
 constexpr uint32_t kPacketCount = 0;
 constexpr uint32_t kPacketData = 1;
 constexpr uint32_t kPacketUpdateLeds = 1050;
+constexpr uint32_t kPacketUpdateZoneLeds = 1051;
+constexpr uint32_t kPacketSetCustomMode = 1100;
 constexpr uint32_t kPacketUpdateMode = 1101;
 
 class Reader {
@@ -190,28 +195,86 @@ void parse_vid_pid(const std::string& location, uint16_t& vid, uint16_t& pid) {
   read_id("pid_", pid);
 }
 
-int mode_index_for(const std::vector<OrgbMode>& modes, const std::string& effect) {
-  const std::string wanted = lower_copy(effect);
-  auto matches = [&](const std::string& name) {
-    if (wanted == "off") return name.find("off") != std::string::npos || name.find("none") != std::string::npos;
-    if (wanted == "static") {
-      return name.find("direct") != std::string::npos || name.find("static") != std::string::npos ||
-             name.find("fixed") != std::string::npos || name.find("custom") != std::string::npos ||
-             name.find("solid") != std::string::npos;
-    }
-    if (wanted == "breathe") return name.find("breath") != std::string::npos || name.find("fad") != std::string::npos;
-    if (wanted == "spectrum") return name.find("spectrum") != std::string::npos || name.find("cycle") != std::string::npos;
-    if (wanted == "rainbow") return name.find("rainbow") != std::string::npos;
-    if (wanted == "wave") {
-      return name.find("wave") != std::string::npos || name.find("marquee") != std::string::npos ||
-             name.find("flow") != std::string::npos;
-    }
-    return false;
-  };
-  for (size_t i = 0; i < modes.size(); ++i) {
-    if (matches(lower_copy(modes[i].name))) return static_cast<int>(i);
+int rank_mode(const std::string& wanted, const std::string& name) {
+  if (wanted == "off") {
+    if (name.find("off") != std::string::npos || name.find("none") != std::string::npos) return 1;
+    return 0;
   }
-  return -1;
+  if (wanted == "static") {
+    if (name.find("direct") != std::string::npos) return 4;
+    if (name.find("static") != std::string::npos || name.find("fixed") != std::string::npos) return 3;
+    if (name.find("custom") != std::string::npos) return 2;
+    if (name.find("solid") != std::string::npos) return 1;
+    return 0;
+  }
+  if (wanted == "breathe") {
+    if (name.find("breath") != std::string::npos || name.find("fad") != std::string::npos) return 1;
+    return 0;
+  }
+  if (wanted == "spectrum") {
+    if (name.find("spectrum") != std::string::npos || name.find("cycle") != std::string::npos) return 1;
+    return 0;
+  }
+  if (wanted == "rainbow") return name.find("rainbow") != std::string::npos ? 1 : 0;
+  if (wanted == "wave") {
+    if (name.find("wave") != std::string::npos || name.find("marquee") != std::string::npos ||
+        name.find("flow") != std::string::npos)
+      return 1;
+    return 0;
+  }
+  return 0;
+}
+
+bool mode_is_direct(const OrgbMode& mode) {
+  return lower_copy(mode.name).find("direct") != std::string::npos;
+}
+
+struct Session {
+  Socket socket = kInvalidSocket;
+  int protocol = 0;
+  std::string error;
+};
+
+Session handshake() {
+  Session session;
+  session.socket = connect_local(6742, 1500);
+  if (session.socket == kInvalidSocket) {
+    session.error =
+        "OpenRGB сейчас не слушает порт 6742. Запусти SDK-сервер от администратора и повтори.";
+    return session;
+  }
+  std::vector<uint8_t> version_payload;
+  write_u32(version_payload, kClientProtocol);
+  auto hello = packet(0, kPacketVersion, version_payload);
+  if (!send_all(session.socket, hello.data(), hello.size())) {
+    session.error = "OpenRGB принял соединение и сразу его закрыл.";
+    return session;
+  }
+  uint32_t device = 0;
+  uint32_t id = 0;
+  std::vector<uint8_t> payload;
+  if (!read_packet(session.socket, device, id, payload) || id != kPacketVersion || payload.size() < 4) {
+    session.error = "OpenRGB не сообщил версию протокола.";
+    return session;
+  }
+  const int server_protocol =
+      static_cast<int>(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
+  session.protocol = server_protocol < kClientProtocol ? server_protocol : kClientProtocol;
+  if (session.protocol < 1) {
+    session.error = "OpenRGB отвечает слишком старым протоколом.";
+    return session;
+  }
+  const std::string name = "Helios";
+  std::vector<uint8_t> name_payload(name.begin(), name.end());
+  name_payload.push_back(0);
+  auto name_packet = packet(0, kPacketSetName, name_payload);
+  send_all(session.socket, name_packet.data(), name_packet.size());
+  return session;
+}
+
+bool send_packet(Socket socket, uint32_t device, uint32_t id, const std::vector<uint8_t>& payload) {
+  auto message = packet(device, id, payload);
+  return send_all(socket, message.data(), message.size());
 }
 
 uint32_t scale_range(int percent, uint32_t min_value, uint32_t max_value) {
@@ -222,9 +285,23 @@ uint32_t scale_range(int percent, uint32_t min_value, uint32_t max_value) {
 
 }  // namespace
 
+int orgb_mode_index_for(const std::vector<OrgbMode>& modes, const std::string& effect) {
+  const std::string wanted = lower_copy(effect);
+  int best = -1;
+  int best_rank = 0;
+  for (size_t i = 0; i < modes.size(); ++i) {
+    const int rank = rank_mode(wanted, lower_copy(modes[i].name));
+    if (rank > best_rank) {
+      best_rank = rank;
+      best = static_cast<int>(i);
+    }
+  }
+  return best;
+}
+
 bool orgb_has_effect(const std::vector<OrgbMode>& modes, const std::string& effect) {
   if (effect == "static") return true;
-  return mode_index_for(modes, effect) >= 0;
+  return orgb_mode_index_for(modes, effect) >= 0;
 }
 
 bool parse_orgb_controller(const uint8_t* bytes, size_t size, int protocol, OrgbController& out) {
@@ -290,47 +367,26 @@ bool parse_orgb_controller(const uint8_t* bytes, size_t size, int protocol, Orgb
 
 OpenRgbBridge::Result OpenRgbBridge::discover() {
   Result result;
-  Socket socket = connect_local(6742, 1500);
-  if (socket == kInvalidSocket) {
+  Session session = handshake();
+  if (!session.error.empty()) {
     result.detail =
-        "SDK-сервер OpenRGB на 127.0.0.1:6742 не отвечает. Скачай OpenRGB, запусти от администратора (SMBus планок без этого "
-        "часто не виден), Settings → SDK Server → Start, порт 6742. Потом в Helios нажми «Обзор».";
+        session.socket == kInvalidSocket
+            ? "SDK-сервер OpenRGB на 127.0.0.1:6742 не отвечает. Скачай OpenRGB, запусти от администратора (SMBus планок без этого "
+              "часто не виден), Settings → SDK Server → Start, порт 6742. Потом в Helios нажми «Обзор»."
+            : session.error;
+    if (session.socket != kInvalidSocket) close_socket(session.socket);
     return result;
   }
   struct Guard {
     Socket socket;
     ~Guard() { close_socket(socket); }
-  } guard{socket};
+  } guard{session.socket};
 
-  std::vector<uint8_t> version_payload;
-  write_u32(version_payload, kClientProtocol);
-  auto hello = packet(0, kPacketVersion, version_payload);
-  if (!send_all(socket, hello.data(), hello.size())) {
-    result.detail = "OpenRGB принял соединение и сразу его закрыл.";
-    return result;
-  }
+  const int protocol = session.protocol;
   uint32_t device = 0;
   uint32_t id = 0;
   std::vector<uint8_t> payload;
-  if (!read_packet(socket, device, id, payload) || id != kPacketVersion || payload.size() < 4) {
-    result.detail = "OpenRGB не сообщил версию протокола.";
-    return result;
-  }
-  const int server_protocol = static_cast<int>(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24));
-  const int protocol = server_protocol < kClientProtocol ? server_protocol : kClientProtocol;
-  if (protocol < 1) {
-    result.detail = "OpenRGB отвечает слишком старым протоколом.";
-    return result;
-  }
-
-  const std::string name = "Helios";
-  std::vector<uint8_t> name_payload(name.begin(), name.end());
-  name_payload.push_back(0);
-  auto name_packet = packet(0, kPacketSetName, name_payload);
-  send_all(socket, name_packet.data(), name_packet.size());
-
-  auto count_packet = packet(0, kPacketCount, {});
-  if (!send_all(socket, count_packet.data(), count_packet.size()) || !read_packet(socket, device, id, payload) ||
+  if (!send_packet(session.socket, 0, kPacketCount, {}) || !read_packet(session.socket, device, id, payload) ||
       payload.size() < 4) {
     result.detail = "OpenRGB не отдал список устройств.";
     return result;
@@ -344,10 +400,10 @@ OpenRgbBridge::Result OpenRgbBridge::discover() {
   for (uint32_t index = 0; index < count; ++index) {
     std::vector<uint8_t> request;
     write_u32(request, static_cast<uint32_t>(protocol));
-    auto data_packet = packet(index, kPacketData, request);
-    if (!send_all(socket, data_packet.data(), data_packet.size()) || !read_packet(socket, device, id, payload)) break;
+    if (!send_packet(session.socket, index, kPacketData, request) || !read_packet(session.socket, device, id, payload)) break;
     OrgbController controller;
     controller.index = static_cast<int>(index);
+    controller.protocol = protocol;
     if (!parse_orgb_controller(payload.data(), payload.size(), protocol, controller)) continue;
     result.controllers.push_back(std::move(controller));
   }
@@ -356,41 +412,71 @@ OpenRgbBridge::Result OpenRgbBridge::discover() {
   return result;
 }
 
-std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& zone, int protocol) {
-  const int mode_index = mode_index_for(controller.modes, zone.effect);
+std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& zone, int protocol_hint) {
+  const int mode_index = orgb_mode_index_for(controller.modes, zone.effect);
   if (mode_index < 0 && zone.effect != "static") {
     return "У этого устройства в OpenRGB нет эффекта «" + zone.effect + "».";
   }
-  Socket socket = connect_local(6742, 1500);
-  if (socket == kInvalidSocket) return "OpenRGB сейчас не слушает порт 6742. Запусти SDK-сервер и повтори.";
+  Session session = handshake();
+  if (!session.error.empty()) {
+    if (session.socket != kInvalidSocket) close_socket(session.socket);
+    return session.error;
+  }
   struct Guard {
     Socket socket;
     ~Guard() { close_socket(socket); }
-  } guard{socket};
+  } guard{session.socket};
+
+  const int protocol = session.protocol > 0 ? session.protocol : (protocol_hint > 0 ? protocol_hint : controller.protocol);
+  const uint32_t device = static_cast<uint32_t>(controller.index);
+  const Color paint = zone.effect == "off" ? Color{0, 0, 0} : zone.color;
+  const bool use_direct = mode_index >= 0 && mode_is_direct(controller.modes[static_cast<size_t>(mode_index)]);
+
+  if (zone.effect == "static" && use_direct) {
+    if (!send_packet(session.socket, device, kPacketSetCustomMode, {})) {
+      return "Не удалось включить режим Direct в OpenRGB.";
+    }
+  }
 
   if (mode_index >= 0) {
     OrgbMode mode = controller.modes[static_cast<size_t>(mode_index)];
     mode.speed = scale_range(zone.speed, mode.speedMin, mode.speedMax);
     if (mode.brightMax > mode.brightMin) mode.brightness = scale_range(zone.brightness, mode.brightMin, mode.brightMax);
-    if (mode.colors.empty()) mode.colors.push_back(zone.color);
-    else mode.colors[0] = zone.color;
+    if (mode.colorsMax > 0) {
+      if (mode.colors.empty()) mode.colors.push_back(paint);
+      else mode.colors[0] = paint;
+      if (mode.colors.size() > mode.colorsMax) mode.colors.resize(mode.colorsMax);
+    }
     auto mode_bytes = serialize_mode(mode, protocol);
     std::vector<uint8_t> body;
     const uint32_t data_size = 4 + static_cast<uint32_t>(mode_bytes.size());
     write_u32(body, data_size);
     write_u32(body, static_cast<uint32_t>(mode_index));
     body.insert(body.end(), mode_bytes.begin(), mode_bytes.end());
-    auto message = packet(static_cast<uint32_t>(controller.index), kPacketUpdateMode, body);
-    if (!send_all(socket, message.data(), message.size())) return "Не удалось отправить режим в OpenRGB.";
+    if (!send_packet(session.socket, device, kPacketUpdateMode, body)) return "Не удалось отправить режим в OpenRGB.";
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
   }
 
-  const int count = controller.ledCount > 0 ? controller.ledCount : 1;
-  std::vector<uint8_t> leds;
-  const uint32_t data_size = 2 + static_cast<uint32_t>(count) * 4;
-  write_u32(leds, data_size);
-  write_u16(leds, static_cast<uint16_t>(count));
-  for (int i = 0; i < count; ++i) write_u32(leds, pack_color(zone.effect == "off" ? Color{0, 0, 0} : zone.color));
-  auto led_packet = packet(static_cast<uint32_t>(controller.index), kPacketUpdateLeds, leds);
-  if (!send_all(socket, led_packet.data(), led_packet.size())) return "Не удалось отправить цвет в OpenRGB.";
+  auto fill_colors = [&](std::vector<uint8_t>& out, int count) {
+    for (int i = 0; i < count; ++i) write_u32(out, pack_color(paint));
+  };
+
+  const bool multi_zone = controller.zoneNames.size() > 1;
+  if (multi_zone && zone.channel >= 0 && static_cast<size_t>(zone.channel) < controller.zoneLeds.size()) {
+    const int count = std::max(1, controller.zoneLeds[static_cast<size_t>(zone.channel)]);
+    std::vector<uint8_t> leds;
+    write_u32(leds, 4 + 2 + static_cast<uint32_t>(count) * 4);
+    write_u32(leds, static_cast<uint32_t>(zone.channel));
+    write_u16(leds, static_cast<uint16_t>(count));
+    fill_colors(leds, count);
+    if (!send_packet(session.socket, device, kPacketUpdateZoneLeds, leds)) return "Не удалось отправить цвет зоны в OpenRGB.";
+  } else {
+    const int count = controller.ledCount > 0 ? controller.ledCount : std::max(1, zone.leds);
+    std::vector<uint8_t> leds;
+    write_u32(leds, 2 + static_cast<uint32_t>(count) * 4);
+    write_u16(leds, static_cast<uint16_t>(count));
+    fill_colors(leds, count);
+    if (!send_packet(session.socket, device, kPacketUpdateLeds, leds)) return "Не удалось отправить цвет в OpenRGB.";
+  }
   return {};
 }

@@ -125,6 +125,17 @@ void test_orgb() {
   expect(controller.zoneNames.size() == 1 && controller.zoneLeds.size() == 1 && controller.zoneLeds[0] == 24, "orgb zone");
   expect(orgb_has_effect(controller.modes, "static"), "direct maps to static");
   expect(!orgb_has_effect(controller.modes, "wave"), "missing wave");
+  expect(orgb_mode_index_for(controller.modes, "static") == 0, "lone Direct is static");
+
+  OrgbMode static_mode;
+  static_mode.name = "Static";
+  OrgbMode direct_mode;
+  direct_mode.name = "Direct";
+  OrgbMode breath_mode;
+  breath_mode.name = "Breathing";
+  const std::vector<OrgbMode> mixed{static_mode, breath_mode, direct_mode};
+  expect(orgb_mode_index_for(mixed, "static") == 2, "prefer Direct over Static");
+  expect(orgb_mode_index_for(mixed, "breathe") == 1, "breathing match");
 }
 
 void test_catalog() {

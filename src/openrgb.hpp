@@ -26,6 +26,7 @@ struct OrgbMode {
 
 struct OrgbController {
   int index = 0;
+  int protocol = 4;
   std::string name;
   std::string vendor;
   std::string description;
@@ -44,6 +45,7 @@ struct OrgbController {
 // the server to speak protocol 4 so the layout stays stable.
 bool parse_orgb_controller(const uint8_t* bytes, size_t size, int protocol, OrgbController& out);
 bool orgb_has_effect(const std::vector<OrgbMode>& modes, const std::string& effect);
+int orgb_mode_index_for(const std::vector<OrgbMode>& modes, const std::string& effect);
 
 class OpenRgbBridge {
  public:

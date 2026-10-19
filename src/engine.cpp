@@ -138,7 +138,7 @@ Device device_from_orgb(const OrgbController& controller) {
   device.orgbIndex = controller.index;
   device.vid = controller.vid;
   device.pid = controller.pid;
-  device.note = "Цвет уходит в уже запущенный OpenRGB. Оборотами этот мост не управляет.";
+  device.note = "Цвет ставит кнопка «Применить»: Helios шлёт Direct и цвет в OpenRGB. SDK 6742, OpenRGB — от администратора.";
   const auto effects = effects_for(controller);
   if (controller.zoneNames.empty()) {
     Zone zone;
@@ -310,7 +310,7 @@ void Engine::scanOnce() {
         const auto effects = effects_for(controller);
         for (auto& zone : matched->zones) zone.effects = effects;
       }
-      matched->note = "Опознан на шине и управляется через OpenRGB.";
+      matched->note = "Опознан на шине. Цвет — кнопка «Применить»: уходит в OpenRGB (режим Direct).";
       bindings[matched->id] = controller;
     } else {
       Device device = device_from_orgb(controller);
@@ -645,8 +645,12 @@ Json Engine::patchZone(const std::string& deviceId, const std::string& zoneId, c
   }
   {
     std::lock_guard lock(mu_);
-    if (Device* device = findDevice(deviceId)) device->status = error;
-    if (!error.empty()) generation_++;
+    if (Device* device = findDevice(deviceId)) {
+      if (!error.empty()) device->status = error;
+      else if (device->backend == "openrgb") device->status = "Цвет ушёл в OpenRGB.";
+      else device->status.clear();
+    }
+    if (!error.empty() || (!commands.empty() && commands[0].device.backend == "openrgb")) generation_++;
   }
   saveStore();
   if (!error.empty()) return fail(error);
@@ -735,7 +739,11 @@ Json Engine::paintDevice(const std::string& deviceId, const Json& body) {
   }
   {
     std::lock_guard lock(mu_);
-    if (Device* device = findDevice(deviceId)) device->status = error;
+    if (Device* device = findDevice(deviceId)) {
+      if (!error.empty()) device->status = error;
+      else if (device->backend == "openrgb") device->status = "Цвет ушёл в OpenRGB.";
+      else device->status.clear();
+    }
   }
   saveStore();
   if (!error.empty()) return fail(error);

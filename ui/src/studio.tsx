@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { curvePresets, effectLabel, formatNumber, hexOf, hsvToRgb, modeLabel, rgbOf, rgbToHsv, swatches } from "./format";
 import type { AppState, CurvePoint, Device, Fan, FanMode, Tick, Zone } from "./types";
 
@@ -69,6 +69,17 @@ export function Stage({ device, state, tick, actions }: { device: Device; state:
         </section>
       )}
 
+      {!zone && (
+        <section className="card">
+          <h2>Цвет</h2>
+          <p className="note">
+            У этого узла Helios цвет не ставит. На B450 нет USB ITE 048D, SuperIO пока только читается. Открой слева память
+            (JAD / ENE DRAM) или периферию с зелёной точкой — там цвет уходит в OpenRGB кнопкой «Применить». Хаб Aerocool на
+            SYS_FAN1 крутит крыльчатки, цвет у него с пульта или с тонкого ARGB в колодку платы.
+          </p>
+        </section>
+      )}
+
       {fan && (
         <section className="card">
           <div className="card-head">
@@ -90,7 +101,6 @@ export function Stage({ device, state, tick, actions }: { device: Device; state:
         </section>
       )}
 
-      {!zone && !fan && <section className="card"><h2>Только наблюдение</h2><p className="note">У этого узла нет канала цвета и нет крыльчатки, которой Helios может управлять.</p></section>}
     </main>
   );
 }
@@ -111,17 +121,34 @@ function ColorStudio({ zone, onChange }: { zone: Zone; onChange: (body: object) 
   const initial = rgbToHsv(...Object.values(rgbOf(zone.color)) as [number, number, number]);
   const [hsv, setHsv] = useState(initial);
   const [hex, setHex] = useState(zone.color);
+  const [busy, setBusy] = useState(false);
+  const dragging = useRef(false);
   useEffect(() => {
     const next = rgbToHsv(...Object.values(rgbOf(zone.color)) as [number, number, number]);
     setHsv(next);
     setHex(zone.color);
   }, [zone.id, zone.color]);
 
-  function commit(next = hsv) {
+  function colorOf(next = hsv) {
     const rgb = hsvToRgb(next.h, next.s, next.v);
-    const color = hexOf(rgb.r, rgb.g, rgb.b);
+    return hexOf(rgb.r, rgb.g, rgb.b);
+  }
+
+  function send(body: object) {
+    setBusy(true);
+    void onChange(body).finally(() => setBusy(false));
+  }
+
+  function applyNow(extra: object = {}) {
+    const color = colorOf();
     setHex(color);
-    void onChange({ color });
+    send({ color, effect: zone.effect, speed: zone.speed, brightness: zone.brightness, ...extra });
+  }
+
+  function finishDrag() {
+    if (!dragging.current) return;
+    dragging.current = false;
+    applyNow();
   }
 
   function drag(event: PointerEvent<HTMLDivElement>, mode: "sv" | "hue") {
@@ -130,8 +157,7 @@ function ColorStudio({ zone, onChange }: { zone: Zone; onChange: (body: object) 
     const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
     const next = mode === "hue" ? { ...hsv, h: x * 360 } : { ...hsv, s: x, v: 1 - y };
     setHsv(next);
-    const rgb = hsvToRgb(next.h, next.s, next.v);
-    setHex(hexOf(rgb.r, rgb.g, rgb.b));
+    setHex(colorOf(next));
   }
 
   return (
@@ -141,26 +167,30 @@ function ColorStudio({ zone, onChange }: { zone: Zone; onChange: (body: object) 
           className="sv"
           style={{ ["--h" as string]: hsv.h }}
           onPointerDown={(event) => {
+            dragging.current = true;
             event.currentTarget.setPointerCapture(event.pointerId);
             drag(event, "sv");
           }}
           onPointerMove={(event) => {
             if (event.currentTarget.hasPointerCapture(event.pointerId)) drag(event, "sv");
           }}
-          onPointerUp={() => commit()}
+          onPointerUp={finishDrag}
+          onLostPointerCapture={finishDrag}
         >
           <i style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
         </div>
         <div
           className="hue"
           onPointerDown={(event) => {
+            dragging.current = true;
             event.currentTarget.setPointerCapture(event.pointerId);
             drag(event, "hue");
           }}
           onPointerMove={(event) => {
             if (event.currentTarget.hasPointerCapture(event.pointerId)) drag(event, "hue");
           }}
-          onPointerUp={() => commit()}
+          onPointerUp={finishDrag}
+          onLostPointerCapture={finishDrag}
         >
           <i style={{ left: `${(hsv.h / 360) * 100}%`, top: "50%" }} />
         </div>
@@ -173,21 +203,34 @@ function ColorStudio({ zone, onChange }: { zone: Zone; onChange: (body: object) 
               if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
                 const rgb = rgbOf(hex);
                 setHsv(rgbToHsv(rgb.r, rgb.g, rgb.b));
-                void onChange({ color: hex.toLowerCase() });
+                send({ color: hex.toLowerCase(), effect: zone.effect, speed: zone.speed, brightness: zone.brightness });
               } else setHex(zone.color);
             }}
           />
+          <button className="btn primary" type="button" disabled={busy} onClick={() => applyNow()}>
+            {busy ? "…" : "Применить"}
+          </button>
         </div>
         <div className="swatches">
           {swatches.map((color) => (
-            <button key={color} style={{ background: color }} onClick={() => void onChange({ color })} aria-label={color} />
+            <button
+              key={color}
+              style={{ background: color }}
+              onClick={() => {
+                const rgb = rgbOf(color);
+                setHsv(rgbToHsv(rgb.r, rgb.g, rgb.b));
+                setHex(color);
+                send({ color, effect: zone.effect, speed: zone.speed, brightness: zone.brightness });
+              }}
+              aria-label={color}
+            />
           ))}
         </div>
       </div>
       <div>
         <div className="effects">
           {zone.effects.map((effect) => (
-            <button key={effect} className={zone.effect === effect ? "on" : ""} onClick={() => void onChange({ effect })}>
+            <button key={effect} className={zone.effect === effect ? "on" : ""} onClick={() => applyNow({ effect })}>
               {effectLabel[effect] ?? effect}
             </button>
           ))}
@@ -195,11 +238,11 @@ function ColorStudio({ zone, onChange }: { zone: Zone; onChange: (body: object) 
         <div className="sliders">
           <label>
             Скорость {zone.speed}
-            <input type="range" min={0} max={100} value={zone.speed} onChange={(event) => void onChange({ speed: Number(event.target.value) })} />
+            <input type="range" min={0} max={100} value={zone.speed} onChange={(event) => send({ speed: Number(event.target.value) })} />
           </label>
           <label>
             Яркость {zone.brightness}
-            <input type="range" min={0} max={100} value={zone.brightness} onChange={(event) => void onChange({ brightness: Number(event.target.value) })} />
+            <input type="range" min={0} max={100} value={zone.brightness} onChange={(event) => send({ brightness: Number(event.target.value) })} />
           </label>
         </div>
       </div>
