@@ -30,9 +30,23 @@ Helios не ставит WinRing0 и не пишет регистры Super I/O.
 
 Открой http://127.0.0.1:47621 . На Linux режим стенда включается сам. `--hardware` на Linux ничего не переключает на реальное железо: платформенный код Windows в эту сборку не входит.
 
+## Установка на Windows
+
+Самый простой путь — установщик, без Visual Studio и Node.
+
+1. Скачай `Helios-Setup.exe` из репозитория (`installer/Helios-Setup.exe`) или zip `pack/Helios-windows.zip`.
+2. Запусти **Helios-Setup.exe**. Он ставит программу в `%LOCALAPPDATA%\Helios`, ярлыки — в меню Пуск и на рабочий стол.
+3. Открой ярлык **Helios**. Браузер сам откроет http://127.0.0.1:47621
+
+Windows может спросить про неизвестное приложение: установщик не подписан сертификатом. Нажми «Подробнее» → «Выполнить в любом случае».
+
+Удаление: Параметры Windows → Приложения → Helios, либо `Uninstall.exe` в папке установки.
+
+Портативный вариант: распакуй `Helios-windows.zip` и запусти `install.cmd` или сразу `Helios.cmd`.
+
 ## Сборка на Windows
 
-`scripts/build.sh` — это bash для Linux. В PowerShell он ничего не собирает. Нужен `.\scripts\build.ps1`.
+`scripts/build.sh` — это bash для Linux. В PowerShell он ничего не собирает. Нужен `.\scripts\build.ps1`. Если нужен только запуск, сборка не нужна — бери установщик выше.
 
 Поставь:
 

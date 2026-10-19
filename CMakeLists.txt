@@ -40,6 +40,7 @@ if(WIN32)
     hid
     dxgi
     pdh
+    shell32
   )
 else()
   target_link_libraries(helios_core PUBLIC pthread)
@@ -56,6 +57,12 @@ target_link_libraries(helios PRIVATE helios_core)
 
 add_executable(helios_tests src/tests/test_main.cpp)
 target_link_libraries(helios_tests PRIVATE helios_core)
+
+if(MINGW)
+  foreach(target helios helios_tests)
+    target_link_options(${target} PRIVATE -static -static-libgcc -static-libstdc++)
+  endforeach()
+endif()
 
 enable_testing()
 add_test(NAME helios_tests COMMAND helios_tests)

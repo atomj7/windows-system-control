@@ -5,5 +5,7 @@ ui/dist/
 data/
 agent-tools/
 a.out
+installer/payload/
+pack/Helios-windows/
 *.user
 .DS_Store

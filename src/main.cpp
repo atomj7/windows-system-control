@@ -49,6 +49,7 @@ std::string find_web_root(const std::string& exeDir) {
 int main(int argc, char** argv) {
   int port = 47621;
   bool simulate = false;
+  bool openBrowser = true;
   std::string dataDir = "data";
 #ifdef _WIN32
   bool defaultSimulate = false;
@@ -73,8 +74,10 @@ int main(int argc, char** argv) {
       simulate = true;
     } else if (arg == "--hardware") {
       simulate = false;
+    } else if (arg == "--no-browser") {
+      openBrowser = false;
     } else if (arg == "--help") {
-      std::cout << "Helios\n  --port 47621\n  --data data\n  --simulate\n  --hardware\n";
+      std::cout << "Helios\n  --port 47621\n  --data data\n  --simulate\n  --hardware\n  --no-browser\n";
       return 0;
     }
   }
@@ -83,8 +86,16 @@ int main(int argc, char** argv) {
   Engine engine(std::move(platform), dataDir);
   engine.start();
   const std::string web = find_web_root(executable_dir(argv[0]));
-  std::cout << "Helios слушает http://127.0.0.1:" << port << "\n";
+  const std::string url = "http://127.0.0.1:" + std::to_string(port);
+  std::cout << "Helios слушает " << url << "\n";
   std::cout << "Интерфейс: " << web << "\n";
+#ifdef _WIN32
+  if (openBrowser) {
+    ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+#else
+  (void)openBrowser;
+#endif
   const int code = serve_http(engine, "127.0.0.1", port, web);
   if (code != 0) std::cerr << "Не удалось открыть порт " << port << "\n";
   return code;
