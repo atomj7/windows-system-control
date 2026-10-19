@@ -1,10 +1,12 @@
 #pragma once
 
 #include "model.hpp"
+#include "net.hpp"
 
 #include <cstdint>
-#include <functional>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct OrgbMode {
@@ -55,6 +57,21 @@ class OpenRgbBridge {
     std::vector<OrgbController> controllers;
   };
 
+  OpenRgbBridge() = default;
+  ~OpenRgbBridge();
+  OpenRgbBridge(const OpenRgbBridge&) = delete;
+  OpenRgbBridge& operator=(const OpenRgbBridge&) = delete;
+
   Result discover();
   std::string apply(const OrgbController& controller, const Zone& zone, int protocol = 4);
+
+ private:
+  void disconnect();
+  std::string ensure();
+  std::string push(const OrgbController& controller, const Zone& zone, int protocol, bool force_mode);
+
+  std::mutex mu_;
+  Socket socket_ = kInvalidSocket;
+  int protocol_ = 0;
+  std::unordered_map<int, int> armed_mode_;
 };

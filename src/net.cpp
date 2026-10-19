@@ -8,6 +8,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #endif
 
@@ -102,6 +103,8 @@ Socket connect_local(uint16_t port, int timeout_ms) {
 #else
   fcntl(socket, F_SETFL, flags);
 #endif
+  const int nodelay = 1;
+  setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
   return socket;
 }
 

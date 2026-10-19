@@ -4,9 +4,7 @@
 #include "util.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstring>
-#include <thread>
 
 namespace {
 
@@ -412,49 +410,65 @@ OpenRgbBridge::Result OpenRgbBridge::discover() {
   return result;
 }
 
-std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& zone, int protocol_hint) {
-  const int mode_index = orgb_mode_index_for(controller.modes, zone.effect);
-  if (mode_index < 0 && zone.effect != "static") {
-    return "У этого устройства в OpenRGB нет эффекта «" + zone.effect + "».";
+OpenRgbBridge::~OpenRgbBridge() {
+  std::lock_guard lock(mu_);
+  disconnect();
+}
+
+void OpenRgbBridge::disconnect() {
+  if (socket_ != kInvalidSocket) {
+    close_socket(socket_);
+    socket_ = kInvalidSocket;
   }
+  protocol_ = 0;
+  armed_mode_.clear();
+}
+
+std::string OpenRgbBridge::ensure() {
+  if (socket_ != kInvalidSocket) return {};
   Session session = handshake();
   if (!session.error.empty()) {
     if (session.socket != kInvalidSocket) close_socket(session.socket);
     return session.error;
   }
-  struct Guard {
-    Socket socket;
-    ~Guard() { close_socket(socket); }
-  } guard{session.socket};
+  socket_ = session.socket;
+  protocol_ = session.protocol;
+  return {};
+}
 
-  const int protocol = session.protocol > 0 ? session.protocol : (protocol_hint > 0 ? protocol_hint : controller.protocol);
+std::string OpenRgbBridge::push(const OrgbController& controller, const Zone& zone, int protocol, bool force_mode) {
+  const int mode_index = orgb_mode_index_for(controller.modes, zone.effect);
+  if (mode_index < 0 && zone.effect != "static") {
+    return "У этого устройства в OpenRGB нет эффекта «" + zone.effect + "».";
+  }
   const uint32_t device = static_cast<uint32_t>(controller.index);
   const Color paint = zone.effect == "off" ? Color{0, 0, 0} : zone.color;
   const bool use_direct = mode_index >= 0 && mode_is_direct(controller.modes[static_cast<size_t>(mode_index)]);
+  const auto armed = armed_mode_.find(controller.index);
+  const bool already_armed = armed != armed_mode_.end() && armed->second == mode_index;
+  const bool leds_only = use_direct && (zone.effect == "static" || zone.effect == "off") && already_armed && !force_mode;
 
-  if (zone.effect == "static" && use_direct) {
-    if (!send_packet(session.socket, device, kPacketSetCustomMode, {})) {
-      return "Не удалось включить режим Direct в OpenRGB.";
+  if (!leds_only) {
+    if (zone.effect == "static" && use_direct) {
+      if (!send_packet(socket_, device, kPacketSetCustomMode, {})) return "Не удалось включить режим Direct в OpenRGB.";
     }
-  }
-
-  if (mode_index >= 0) {
-    OrgbMode mode = controller.modes[static_cast<size_t>(mode_index)];
-    mode.speed = scale_range(zone.speed, mode.speedMin, mode.speedMax);
-    if (mode.brightMax > mode.brightMin) mode.brightness = scale_range(zone.brightness, mode.brightMin, mode.brightMax);
-    if (mode.colorsMax > 0) {
-      if (mode.colors.empty()) mode.colors.push_back(paint);
-      else mode.colors[0] = paint;
-      if (mode.colors.size() > mode.colorsMax) mode.colors.resize(mode.colorsMax);
+    if (mode_index >= 0) {
+      OrgbMode mode = controller.modes[static_cast<size_t>(mode_index)];
+      mode.speed = scale_range(zone.speed, mode.speedMin, mode.speedMax);
+      if (mode.brightMax > mode.brightMin) mode.brightness = scale_range(zone.brightness, mode.brightMin, mode.brightMax);
+      if (mode.colorsMax > 0) {
+        if (mode.colors.empty()) mode.colors.push_back(paint);
+        else mode.colors[0] = paint;
+        if (mode.colors.size() > mode.colorsMax) mode.colors.resize(mode.colorsMax);
+      }
+      auto mode_bytes = serialize_mode(mode, protocol);
+      std::vector<uint8_t> body;
+      const uint32_t data_size = 4 + static_cast<uint32_t>(mode_bytes.size());
+      write_u32(body, data_size);
+      write_u32(body, static_cast<uint32_t>(mode_index));
+      body.insert(body.end(), mode_bytes.begin(), mode_bytes.end());
+      if (!send_packet(socket_, device, kPacketUpdateMode, body)) return "Не удалось отправить режим в OpenRGB.";
     }
-    auto mode_bytes = serialize_mode(mode, protocol);
-    std::vector<uint8_t> body;
-    const uint32_t data_size = 4 + static_cast<uint32_t>(mode_bytes.size());
-    write_u32(body, data_size);
-    write_u32(body, static_cast<uint32_t>(mode_index));
-    body.insert(body.end(), mode_bytes.begin(), mode_bytes.end());
-    if (!send_packet(session.socket, device, kPacketUpdateMode, body)) return "Не удалось отправить режим в OpenRGB.";
-    std::this_thread::sleep_for(std::chrono::milliseconds(40));
   }
 
   auto fill_colors = [&](std::vector<uint8_t>& out, int count) {
@@ -469,14 +483,32 @@ std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& z
     write_u32(leds, static_cast<uint32_t>(zone.channel));
     write_u16(leds, static_cast<uint16_t>(count));
     fill_colors(leds, count);
-    if (!send_packet(session.socket, device, kPacketUpdateZoneLeds, leds)) return "Не удалось отправить цвет зоны в OpenRGB.";
+    if (!send_packet(socket_, device, kPacketUpdateZoneLeds, leds)) return "Не удалось отправить цвет зоны в OpenRGB.";
   } else {
     const int count = controller.ledCount > 0 ? controller.ledCount : std::max(1, zone.leds);
     std::vector<uint8_t> leds;
     write_u32(leds, 2 + static_cast<uint32_t>(count) * 4);
     write_u16(leds, static_cast<uint16_t>(count));
     fill_colors(leds, count);
-    if (!send_packet(session.socket, device, kPacketUpdateLeds, leds)) return "Не удалось отправить цвет в OpenRGB.";
+    if (!send_packet(socket_, device, kPacketUpdateLeds, leds)) return "Не удалось отправить цвет в OpenRGB.";
   }
+  if (mode_index >= 0) armed_mode_[controller.index] = mode_index;
   return {};
+}
+
+std::string OpenRgbBridge::apply(const OrgbController& controller, const Zone& zone, int protocol_hint) {
+  const int mode_index = orgb_mode_index_for(controller.modes, zone.effect);
+  if (mode_index < 0 && zone.effect != "static") {
+    return "У этого устройства в OpenRGB нет эффекта «" + zone.effect + "».";
+  }
+  std::lock_guard lock(mu_);
+  std::string error = ensure();
+  if (!error.empty()) return error;
+  const int protocol = protocol_ > 0 ? protocol_ : (protocol_hint > 0 ? protocol_hint : controller.protocol);
+  error = push(controller, zone, protocol, false);
+  if (error.empty()) return {};
+  disconnect();
+  error = ensure();
+  if (!error.empty()) return error;
+  return push(controller, zone, protocol_ > 0 ? protocol_ : protocol, true);
 }
