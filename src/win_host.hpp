@@ -1,6 +1,5 @@
 #pragma once
 
-#include <string>
+class Engine;
 
-int run_helios_window(const std::string& url);
-void open_helios_url(const std::string& url);
+int run_helios_window(Engine& engine);

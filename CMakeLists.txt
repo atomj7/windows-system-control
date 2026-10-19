@@ -43,6 +43,8 @@ if(WIN32)
     pdh
     shell32
     user32
+    gdi32
+    comctl32
   )
 else()
   target_link_libraries(helios_core PUBLIC pthread)

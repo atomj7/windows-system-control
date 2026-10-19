@@ -11,6 +11,7 @@ extern "C" {
 #include <setupapi.h>
 
 #include <algorithm>
+#include <cstddef>
 
 namespace {
 
@@ -64,10 +65,10 @@ std::vector<std::wstring> hid_paths_for(uint16_t vid, uint16_t pid) {
   for (DWORD index = 0; SetupDiEnumDeviceInterfaces(info, nullptr, &guid, index, &interfaceData); ++index) {
     DWORD needed = 0;
     SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, nullptr, 0, &needed, nullptr);
-    if (needed < sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)) continue;
+    if (needed < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)) continue;
     std::vector<uint8_t> buffer(needed);
     auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
-    detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+    detail->cbSize = offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t);
     if (!SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, nullptr)) continue;
     HANDLE handle = CreateFileW(detail->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE) continue;

@@ -125,9 +125,7 @@ int helios_main(int argc, char** argv) {
     std::thread server([&] {
       listenCode = serve_http(engine, "127.0.0.1", port, web, [&] {
         log_info("слушает " + url);
-#ifdef _WIN32
-        if (openBrowser) open_helios_url(url);
-#else
+#ifndef _WIN32
         (void)openBrowser;
         std::cout << "Helios слушает " << url << "\n";
 #endif
@@ -136,7 +134,8 @@ int helios_main(int argc, char** argv) {
     });
 
 #ifdef _WIN32
-    const int windowCode = run_helios_window(url);
+    (void)openBrowser;
+    const int windowCode = run_helios_window(engine);
     engine.stop();
     interrupt_http();
     if (server.joinable()) server.join();

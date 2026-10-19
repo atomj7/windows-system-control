@@ -2,6 +2,7 @@
 
 #include "catalog.hpp"
 #include "curve.hpp"
+#include "log.hpp"
 #include "util.hpp"
 #include "win_nzxt.hpp"
 
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <mutex>
 #include <string>
@@ -229,10 +231,10 @@ std::vector<UsbHit> enumerate_usb() {
   for (DWORD index = 0; SetupDiEnumDeviceInterfaces(info, nullptr, &kUsbDevice, index, &interfaceData); ++index) {
     DWORD needed = 0;
     SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, nullptr, 0, &needed, nullptr);
-    if (needed < sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)) continue;
+    if (needed < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)) continue;
     std::vector<uint8_t> buffer(needed);
     auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
-    detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+    detail->cbSize = offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t);
     SP_DEVINFO_DATA deviceInfo{};
     deviceInfo.cbSize = sizeof(deviceInfo);
     if (!SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, &deviceInfo)) continue;
@@ -444,16 +446,22 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     }
   }
 
+  log_info("обзор: NVML/DXGI");
   nvmlReady_ = nvml_.open();
   std::vector<NvmlGpu> gpus = nvmlReady_ ? nvml_.sample() : std::vector<NvmlGpu>{};
   int dxgiCount = 0;
   bool amdSeen = false;
   IDXGIFactory1* factory = nullptr;
   if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
-    IDXGIAdapter1* adapter = nullptr;
-    for (UINT index = 0; factory->EnumAdapters1(index, &adapter) != DXGI_ERROR_NOT_FOUND; ++index) {
+    for (UINT index = 0;; ++index) {
+      IDXGIAdapter1* adapter = nullptr;
+      const HRESULT hr = factory->EnumAdapters1(index, &adapter);
+      if (hr == DXGI_ERROR_NOT_FOUND || FAILED(hr) || !adapter) break;
       DXGI_ADAPTER_DESC1 desc{};
-      adapter->GetDesc1(&desc);
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        adapter->Release();
+        continue;
+      }
       adapter->Release();
       if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
       ++dxgiCount;
@@ -519,6 +527,7 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   report(ScanStep{"gpu", "Видеоадаптеры", "DXGI: " + std::to_string(dxgiCount) + ", NVML: " + (nvmlReady_ ? nvml_.detail() : "нет"),
                   dxgiCount > 0 ? "ok" : "warn"});
 
+  log_info("обзор: USB");
   const auto usb = enumerate_usb();
   int hubs = 0;
   int promoted = 0;
