@@ -72,11 +72,16 @@ export function Stage({ device, state, tick, actions }: { device: Device; state:
       {!zone && (
         <section className="card">
           <h2>Цвет</h2>
-          <p className="note">
-            У этого узла Helios цвет не ставит. На B450 нет USB ITE 048D, SuperIO пока только читается. Открой слева память
-            (JAD / ENE DRAM) или периферию с зелёной точкой — там цвет уходит в OpenRGB кнопкой «Применить». Хаб Aerocool на
-            SYS_FAN1 крутит крыльчатки, цвет у него с пульта или с тонкого ARGB в колодку платы.
-          </p>
+          {device.kind === "motherboard" ? (
+            <p className="note">
+              С этой платы цвет вентиляторов не поставить: нет USB Fusion 2.0, а LED_CPU — 12 В, не 5 В ARGB. Тонкий кабель
+              хаба Aerocool туда не втыкай. Пульт работает по радио 433 МГц (режим HUB) — Helios его не повторяет. Обходной
+              путь: на пульте MOBO, кабель 5 В 3-pin с хаба — в USB-контроллер ARGB, который видит OpenRGB (Nollie, Airgoo и
+              похожие). 4-pin на SYS_FAN1 оставь: это скорость. После «Обзор» контроллер появится слева, цвет — «Применить».
+            </p>
+          ) : (
+            <p className="note">У этого узла Helios цвет не ставит. Память и устройства с зелёной точкой — слева, кнопка «Применить».</p>
+          )}
         </section>
       )}
 

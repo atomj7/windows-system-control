@@ -949,9 +949,12 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   }
   if (board && board->backend != "fusion") {
     board->note =
-        "USB ITE 048D нет. 4-pin SYS_FAN1 — это ШИМ скорости хаба Aerocool, не цвет. Цвет у H66F и похожих — пульт (режим HUB) "
-        "или отдельный тонкий ARGB в колодку LED платы (режим MOBO). На части Gigabyte SYS_FAN это DC, не PWM: если обороты с "
-        "платы не слушаются, в BIOS поставь SYS_FAN1 в PWM. SuperIO Helios пока не читает: нужен открытый PawnIO и карта чипа.";
+        "USB ITE 048D нет — это Fusion 1.0, не 2.0. B450M DS3H-CF: колодка LED_CPU это 12 В RGB (12V/G/R/B), не 5 В ARGB. "
+        "Не втыкай тонкий кабель хаба Aerocool в LED_CPU: 12 В сожжёт светодиоды. 4-pin SYS_FAN1 — только ШИМ скорости. "
+        "Цвет хаба в режиме HUB идёт по радио 433 МГц с пульта, Helios это не шлёт. Обход: пульт → MOBO, тонкий 5 В 3-pin ARGB "
+        "хаба — в USB-контроллер ARGB (Nollie, Airgoo, любой, который видит OpenRGB), не в плату. После «Обзор» контроллер "
+        "появится слева, цвет — «Применить». Если обороты с SYS_FAN1 не слушаются, в BIOS поставь этот разъём в PWM. "
+        "Если на шелкографии есть D_LED1 (5 В, выломанный пин) — это уже другая ревизия, тогда ARGB можно в D_LED.";
   }
 
   sample_cpu();
