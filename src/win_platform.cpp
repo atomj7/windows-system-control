@@ -5,6 +5,7 @@
 #include "log.hpp"
 #include "util.hpp"
 #include "win_nzxt.hpp"
+#include "win_seh.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -20,9 +21,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -320,12 +323,127 @@ Device make_identified_device(const KnownHardware* known, uint16_t vid, uint16_t
   return device;
 }
 
+int nvml_open_cb(void* self) { return static_cast<Nvml*>(self)->open() ? 1 : 0; }
+
+int nvml_sample_cb(void* raw) {
+  auto* bag = static_cast<std::pair<Nvml*, std::vector<NvmlGpu>*>*>(raw);
+  *bag->second = bag->first->sample();
+  return 1;
+}
+
+std::vector<NvmlGpu> nvml_sample_safe(Nvml& nvml) {
+  std::vector<NvmlGpu> gpus;
+  unsigned long code = 0;
+  std::pair<Nvml*, std::vector<NvmlGpu>*> bag{&nvml, &gpus};
+  if (helios_protect(nvml_sample_cb, &bag, &code) < 0) {
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "%08lX", code);
+    log_error(std::string("NVML sample упал, код 0x") + buffer);
+    return {};
+  }
+  return gpus;
+}
+
+struct DxgiBag {
+  std::vector<Device>* devices;
+  std::vector<NvmlGpu>* gpus;
+  int* count;
+  bool* amdSeen;
+};
+
+int dxgi_enum_cb(void* raw) {
+  auto* bag = static_cast<DxgiBag*>(raw);
+  IDXGIFactory1* factory = nullptr;
+  const HRESULT made = CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void**>(&factory));
+  if (FAILED(made) || !factory) return 0;
+  for (UINT index = 0;; ++index) {
+    IDXGIAdapter1* adapter = nullptr;
+    const HRESULT hr = factory->EnumAdapters1(index, &adapter);
+    if (hr == DXGI_ERROR_NOT_FOUND || FAILED(hr) || !adapter) break;
+    DXGI_ADAPTER_DESC1 desc{};
+    const HRESULT got = adapter->GetDesc1(&desc);
+    adapter->Release();
+    adapter = nullptr;
+    if (FAILED(got)) continue;
+    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+    ++(*bag->count);
+    const std::string name = wide_to_utf8(desc.Description);
+    if (desc.VendorId == 0x1002) *bag->amdSeen = true;
+    Device gpu;
+    gpu.id = "gpu-" + std::to_string(index);
+    gpu.name = name.empty() ? "Видеоадаптер" : name;
+    gpu.vendor = desc.VendorId == 0x10DE ? "NVIDIA" : desc.VendorId == 0x1002 ? "AMD" : "GPU";
+    gpu.kind = "gpu";
+    gpu.bus = "pci";
+    const double gib = static_cast<double>(desc.DedicatedVideoMemory) / (1024.0 * 1024.0 * 1024.0);
+    gpu.connection = "PCIe · " + std::to_string(std::max(1, static_cast<int>(std::llround(gib)))) + " ГБ";
+    gpu.hardware = "monitor";
+    gpu.backend = "dxgi";
+    gpu.note = "Имя и память взяты из DXGI.";
+    if (desc.VendorId == 0x10DE) {
+      const NvmlGpu* match = nullptr;
+      for (const auto& item : *bag->gpus) {
+        if (!item.name.empty() && (contains_ci(name, item.name) || contains_ci(item.name, name) || !match)) {
+          match = &item;
+          if (contains_ci(name, item.name) || contains_ci(item.name, name)) break;
+        }
+      }
+      if (!match && !bag->gpus->empty()) match = &bag->gpus->front();
+      if (match) {
+        gpu.backend = "nvml";
+        gpu.nvmlIndex = match->index;
+        gpu.hardware = match->canControl ? "live" : "monitor";
+        gpu.note = match->canControl
+                       ? "Телеметрия NVML. Заводская кривая остаётся, пока не включишь кривую Helios или ручной режим. Ниже защитного порога крыльчатка сама не опустится."
+                       : "NVML читает датчики, но запись оборотов эта библиотека не отдала.";
+        if (match->tempKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_temp", "GPU", "°C", "temperature", match->temp));
+        if (match->loadKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_load", "Загрузка", "%", "load", match->load));
+        if (match->powerKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_power", "Мощность", "Вт", "power", match->power));
+        if (match->clockKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_clock", "Ядро", "МГц", "clock", match->clock));
+        int fanIndex = 0;
+        for (const auto& fanReading : match->fans) {
+          Fan fan;
+          fan.id = "fan" + std::to_string(fanIndex);
+          fan.name = match->fans.size() == 1 ? "Крыльчатка" : "Крыльчатка " + std::to_string(fanIndex + 1);
+          fan.channel = fanIndex;
+          fan.controllable = match->canControl;
+          fan.mode = "auto";
+          fan.minDuty = 30;
+          fan.rpm = fanReading.rpm;
+          fan.rpmKnown = fanReading.rpmKnown;
+          fan.duty = fanReading.percentKnown ? fanReading.percent : 40;
+          fan.dutyKnown = fanReading.percentKnown;
+          fan.source = gpu.sensors.empty() ? "cpu_temp" : gpu.sensors[0].id;
+          fan.curve = curve_balanced();
+          gpu.fans.push_back(std::move(fan));
+          ++fanIndex;
+        }
+      }
+    } else if (desc.VendorId == 0x1002) {
+      gpu.note = "AMD виден через DXGI. Закрытые структуры ADL не разбираются: так меньше шансов задеть драйвер. Температуру и обороты добавлю, когда будет стабильный вызов.";
+    }
+    bag->devices->push_back(std::move(gpu));
+  }
+  factory->Release();
+  return 1;
+}
+
 }  // namespace
 
 WindowsPlatform::WindowsPlatform() {
   info_.mode = "windows";
   info_.computer = "Этот компьютер";
   info_.detail = "Helios читает устройства этой машины. Обороты крыльчаток платы без PawnIO недоступны: WinRing0 сюда сознательно не входит.";
+  unsigned long code = 0;
+  if (helios_protect(nvml_open_cb, &nvml_, &code) < 0) {
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "%08lX", code);
+    log_error(std::string("NVML упала при старте, код 0x") + buffer);
+    nvmlReady_ = false;
+    nvml_.close();
+  } else {
+    nvmlReady_ = nvml_.ready();
+  }
 }
 
 WindowsPlatform::~WindowsPlatform() {
@@ -446,83 +564,38 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     }
   }
 
-  log_info("обзор: NVML/DXGI");
-  nvmlReady_ = nvml_.open();
-  std::vector<NvmlGpu> gpus = nvmlReady_ ? nvml_.sample() : std::vector<NvmlGpu>{};
+  log_info("обзор: NVML sample");
+  std::vector<NvmlGpu> gpus = nvmlReady_ ? nvml_sample_safe(nvml_) : std::vector<NvmlGpu>{};
+  log_info("обзор: DXGI");
   int dxgiCount = 0;
   bool amdSeen = false;
-  IDXGIFactory1* factory = nullptr;
-  if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory) {
-    for (UINT index = 0;; ++index) {
-      IDXGIAdapter1* adapter = nullptr;
-      const HRESULT hr = factory->EnumAdapters1(index, &adapter);
-      if (hr == DXGI_ERROR_NOT_FOUND || FAILED(hr) || !adapter) break;
-      DXGI_ADAPTER_DESC1 desc{};
-      if (FAILED(adapter->GetDesc1(&desc))) {
-        adapter->Release();
-        continue;
-      }
-      adapter->Release();
-      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-      ++dxgiCount;
-      const std::string name = wide_to_utf8(desc.Description);
-      if (desc.VendorId == 0x1002) amdSeen = true;
+  unsigned long dxgiCode = 0;
+  DxgiBag dxgiBag{&devices, &gpus, &dxgiCount, &amdSeen};
+  if (helios_protect(dxgi_enum_cb, &dxgiBag, &dxgiCode) < 0) {
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "%08lX", dxgiCode);
+    log_error(std::string("DXGI упала, код 0x") + buffer);
+  }
+  if (dxgiCount == 0 && com.ok()) {
+    auto adapters = wmi.query(L"ROOT\\CIMV2", L"SELECT Name, AdapterRAM, PNPDeviceID FROM Win32_VideoController",
+                              {L"Name", L"AdapterRAM", L"PNPDeviceID"});
+    int index = 0;
+    for (const auto& row : adapters) {
+      const std::string name = field(row, "Name");
+      if (name.empty() || contains_ci(name, "basic") || contains_ci(name, "microsoft")) continue;
       Device gpu;
-      gpu.id = "gpu-" + std::to_string(index);
-      gpu.name = name.empty() ? "Видеоадаптер" : name;
-      gpu.vendor = desc.VendorId == 0x10DE ? "NVIDIA" : desc.VendorId == 0x1002 ? "AMD" : "GPU";
+      gpu.id = "gpu-wmi-" + std::to_string(index++);
+      gpu.name = name;
+      gpu.vendor = contains_ci(name, "nvidia") ? "NVIDIA" : contains_ci(name, "amd") || contains_ci(name, "radeon") ? "AMD" : "GPU";
       gpu.kind = "gpu";
-      gpu.bus = "pci";
-      const double gib = static_cast<double>(desc.DedicatedVideoMemory) / (1024.0 * 1024.0 * 1024.0);
-      gpu.connection = "PCIe · " + std::to_string(std::max(1, static_cast<int>(std::llround(gib)))) + " ГБ";
+      gpu.bus = "wmi";
+      gpu.connection = "WMI";
       gpu.hardware = "monitor";
-      gpu.backend = "dxgi";
-      gpu.note = "Имя и память взяты из DXGI.";
-      if (desc.VendorId == 0x10DE) {
-        const NvmlGpu* match = nullptr;
-        for (const auto& item : gpus) {
-          if (!item.name.empty() && (contains_ci(name, item.name) || contains_ci(item.name, name) || !match)) {
-            match = &item;
-            if (contains_ci(name, item.name) || contains_ci(item.name, name)) break;
-          }
-        }
-        if (!match && !gpus.empty()) match = &gpus[0];
-        if (match) {
-          gpu.backend = "nvml";
-          gpu.nvmlIndex = match->index;
-          gpu.hardware = match->canControl ? "live" : "monitor";
-          gpu.note = match->canControl
-                         ? "Телеметрия NVML. Заводская кривая остаётся, пока не включишь кривую Helios или ручной режим. Ниже защитного порога крыльчатка сама не опустится."
-                         : "NVML читает датчики, но запись оборотов эта библиотека не отдала.";
-          if (match->tempKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_temp", "GPU", "°C", "temperature", match->temp));
-          if (match->loadKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_load", "Загрузка", "%", "load", match->load));
-          if (match->powerKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_power", "Мощность", "Вт", "power", match->power));
-          if (match->clockKnown) gpu.sensors.push_back(make_sensor("gpu" + std::to_string(match->index) + "_clock", "Ядро", "МГц", "clock", match->clock));
-          int fanIndex = 0;
-          for (const auto& fanReading : match->fans) {
-            Fan fan;
-            fan.id = "fan" + std::to_string(fanIndex);
-            fan.name = match->fans.size() == 1 ? "Крыльчатка" : "Крыльчатка " + std::to_string(fanIndex + 1);
-            fan.channel = fanIndex;
-            fan.controllable = match->canControl;
-            fan.mode = "auto";
-            fan.minDuty = 30;
-            fan.rpm = fanReading.rpm;
-            fan.rpmKnown = fanReading.rpmKnown;
-            fan.duty = fanReading.percentKnown ? fanReading.percent : 40;
-            fan.dutyKnown = fanReading.percentKnown;
-            fan.source = gpu.sensors.empty() ? "cpu_temp" : gpu.sensors[0].id;
-            fan.curve = curve_balanced();
-            gpu.fans.push_back(std::move(fan));
-            ++fanIndex;
-          }
-        }
-      } else if (desc.VendorId == 0x1002) {
-        gpu.note = "AMD виден через DXGI. Закрытые структуры ADL не разбираются: так меньше шансов задеть драйвер. Температуру и обороты добавлю, когда будет стабильный вызов.";
-      }
+      gpu.backend = "wmi";
+      gpu.note = "Имя видеокарты из WMI. DXGI/NVML на этой машине не трогаем, если они роняют процесс.";
       devices.push_back(std::move(gpu));
+      ++dxgiCount;
     }
-    factory->Release();
   }
   report(ScanStep{"gpu", "Видеоадаптеры", "DXGI: " + std::to_string(dxgiCount) + ", NVML: " + (nvmlReady_ ? nvml_.detail() : "нет"),
                   dxgiCount > 0 ? "ok" : "warn"});
@@ -623,7 +696,7 @@ void WindowsPlatform::sample(std::vector<Device>& devices) {
     }
   }
   if (!nvmlReady_) return;
-  for (const auto& gpu : nvml_.sample()) {
+  for (const auto& gpu : nvml_sample_safe(nvml_)) {
     for (auto& device : devices) {
       if (device.nvmlIndex != gpu.index || device.backend != "nvml") continue;
       auto put = [&](const std::string& suffix, double value) {

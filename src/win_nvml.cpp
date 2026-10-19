@@ -102,9 +102,12 @@ std::vector<NvmlGpu> Nvml::sample() {
       gpu.tempKnown = true;
     }
     if (utilization_) {
-      unsigned int rates[2] = {};
-      if (reinterpret_cast<UtilFn>(utilization_)(handle, rates) == 0) {
-        gpu.load = rates[0];
+      struct {
+        unsigned int gpu;
+        unsigned int memory;
+      } rates{};
+      if (reinterpret_cast<int(__stdcall*)(void*, void*)>(utilization_)(handle, &rates) == 0) {
+        gpu.load = rates.gpu;
         gpu.loadKnown = true;
       }
     }
