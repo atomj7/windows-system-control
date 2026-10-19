@@ -1,14 +1,19 @@
 #include "engine.hpp"
 #include "http.hpp"
 #include "log.hpp"
+#include "net.hpp"
 #include "platform.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #ifdef _WIN32
+#include "win_host.hpp"
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -48,14 +53,19 @@ std::string find_web_root(const std::filesystem::path& exeDir) {
 }
 
 #ifdef _WIN32
-void open_browser(const std::string& url) {
-  ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+  if (info && info->ExceptionRecord) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%08lX", static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode));
+    log_error(std::string("авария Windows 0x") + buffer);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int helios_main(int argc, char** argv) {
   int port = 47621;
   bool simulate = false;
   bool openBrowser = true;
@@ -92,11 +102,16 @@ int main(int argc, char** argv) {
   }
 
   try {
-    const auto exeDir = executable_dir(argv[0]);
+    const auto exeDir = executable_dir(argc > 0 ? argv[0] : "");
 #ifdef _WIN32
     SetCurrentDirectoryW(exeDir.wstring().c_str());
+    SetUnhandledExceptionFilter(crash_filter);
 #endif
     log_open(exeDir / "helios.log");
+    if (!net_startup()) {
+      show_fatal("Не удалось поднять сетевой стек Windows.");
+      return 1;
+    }
     log_info("старт из " + exeDir.string());
     if (dataDir.empty()) dataDir = (exeDir / "data").string();
     const std::string web = find_web_root(exeDir);
@@ -106,23 +121,38 @@ int main(int argc, char** argv) {
     Engine engine(std::move(platform), dataDir);
     engine.start();
     const std::string url = "http://127.0.0.1:" + std::to_string(port);
-    const int code = serve_http(engine, "127.0.0.1", port, web, [&] {
-      log_info("слушает " + url);
-      std::cout << "Helios слушает " << url << "\n";
-      std::cout << "Интерфейс: " << web << "\n";
-      std::cout << "Окно не закрывай — это служба. Остановка: Ctrl+C.\n";
+    int listenCode = 0;
+    std::thread server([&] {
+      listenCode = serve_http(engine, "127.0.0.1", port, web, [&] {
+        log_info("слушает " + url);
 #ifdef _WIN32
-      if (openBrowser) open_browser(url);
+        if (openBrowser) open_helios_url(url);
 #else
-      (void)openBrowser;
+        (void)openBrowser;
+        std::cout << "Helios слушает " << url << "\n";
 #endif
+      });
+      if (listenCode != 0) log_error("HTTP-служба остановилась с кодом " + std::to_string(listenCode));
     });
-    if (code != 0) {
-      show_fatal("Не удалось открыть порт " + std::to_string(port) +
-                 ".\nЗапусти Helios.cmd из папки программы и пришли helios.log.");
-      return code;
+
+#ifdef _WIN32
+    const int windowCode = run_helios_window(url);
+    engine.stop();
+    interrupt_http();
+    if (server.joinable()) server.join();
+    if (listenCode != 0) {
+      show_fatal("Не удалось открыть порт " + std::to_string(port) + ".\nСмотри helios.log в папке программы.");
+      return listenCode;
+    }
+    return windowCode;
+#else
+    if (server.joinable()) server.join();
+    if (listenCode != 0) {
+      std::cerr << "Не удалось открыть порт " << port << "\n";
+      return listenCode;
     }
     return 0;
+#endif
   } catch (const std::exception& ex) {
     show_fatal(std::string("Helios остановился: ") + ex.what());
     return 1;
@@ -131,3 +161,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+
+int main(int argc, char** argv) { return helios_main(argc, argv); }
+
+#ifdef _WIN32
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) { return helios_main(__argc, __argv); }
+#endif

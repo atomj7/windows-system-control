@@ -59,7 +59,8 @@ $wsh = New-Object -ComObject WScript.Shell
 $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Helios"
 New-Item -ItemType Directory -Force -Path $programs | Out-Null
 $lnk = $wsh.CreateShortcut((Join-Path $programs "Helios.lnk"))
-$lnk.TargetPath = Join-Path $dest "Helios.cmd"
+$lnk.TargetPath = Join-Path $dest "helios.exe"
+$lnk.Arguments = "--hardware"
 $lnk.WorkingDirectory = $dest
 $lnk.WindowStyle = 1
 $lnk.Description = "Helios — свет и воздух"
@@ -67,7 +68,8 @@ $lnk.Save()
 
 $desktop = [Environment]::GetFolderPath("Desktop")
 $desk = $wsh.CreateShortcut((Join-Path $desktop "Helios.lnk"))
-$desk.TargetPath = Join-Path $dest "Helios.cmd"
+$desk.TargetPath = Join-Path $dest "helios.exe"
+$desk.Arguments = "--hardware"
 $desk.WorkingDirectory = $dest
 $desk.WindowStyle = 1
 $desk.Description = "Helios — свет и воздух"

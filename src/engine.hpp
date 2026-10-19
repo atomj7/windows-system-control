@@ -31,6 +31,7 @@ class Engine {
   Engine& operator=(const Engine&) = delete;
 
   void start();
+  void stop();
   void scanBlocking();
   void requestScan();
   void tick();

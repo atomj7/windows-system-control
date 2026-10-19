@@ -54,7 +54,11 @@ else()
   target_compile_options(helios_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(helios src/main.cpp)
+if(WIN32)
+  add_executable(helios WIN32 src/main.cpp src/win_host.cpp)
+else()
+  add_executable(helios src/main.cpp)
+endif()
 target_link_libraries(helios PRIVATE helios_core)
 
 add_executable(helios_tests src/tests/test_main.cpp)

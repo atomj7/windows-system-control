@@ -4,6 +4,7 @@
 #include "net.hpp"
 #include "util.hpp"
 
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <exception>
@@ -261,7 +262,14 @@ void handle(Socket socket, Engine& engine, const std::filesystem::path& webRoot)
   close_socket(socket);
 }
 
+std::atomic<Socket> g_listen{kInvalidSocket};
+
 }  // namespace
+
+void interrupt_http() {
+  Socket socket = g_listen.exchange(kInvalidSocket);
+  if (socket != kInvalidSocket) close_socket(socket);
+}
 
 int serve_http(Engine& engine, const std::string& host, int port, const std::string& webRoot,
                const std::function<void()>& ready) {
@@ -293,9 +301,18 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
     close_socket(server);
     return 1;
   }
+  g_listen.store(server);
   if (ready) ready();
   const std::filesystem::path root = webRoot;
   while (!engine.stopped()) {
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(server, &set);
+    timeval tv{};
+    tv.tv_sec = 1;
+    const int readyCount = select(static_cast<int>(server) + 1, &set, nullptr, nullptr, &tv);
+    if (engine.stopped()) break;
+    if (readyCount <= 0) continue;
     sockaddr_in clientAddress{};
 #ifdef _WIN32
     int length = sizeof(clientAddress);
@@ -316,7 +333,6 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
       }
     }).detach();
   }
-  close_socket(server);
-  net_shutdown();
+  interrupt_http();
   return 0;
 }

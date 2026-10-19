@@ -185,6 +185,11 @@ void Engine::start() {
   tickThread_ = std::thread([this] { tickLoop(); });
 }
 
+void Engine::stop() {
+  stop_ = true;
+  cv_.notify_all();
+}
+
 void Engine::scanLoop() {
   try {
     do {
