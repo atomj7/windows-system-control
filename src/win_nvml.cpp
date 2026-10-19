@@ -5,22 +5,36 @@
 #endif
 #include <windows.h>
 
+#include <utility>
+
 namespace {
 
-using InitFn = int(__stdcall*)();
-using ShutdownFn = int(__stdcall*)();
-using CountFn = int(__stdcall*)(unsigned int*);
-using HandleFn = int(__stdcall*)(unsigned int, void**);
-using NameFn = int(__stdcall*)(void*, char*, unsigned int);
-using TempFn = int(__stdcall*)(void*, int, unsigned int*);
-using UtilFn = int(__stdcall*)(void*, unsigned int*);
-using PowerFn = int(__stdcall*)(void*, unsigned int*);
-using ClockFn = int(__stdcall*)(void*, int, unsigned int*);
-using FanFn = int(__stdcall*)(void*, unsigned int*);
-using FanRpmFn = int(__stdcall*)(void*, unsigned int, unsigned int*);
-using FanCountFn = int(__stdcall*)(void*, unsigned int*);
-using SetFanFn = int(__stdcall*)(void*, unsigned int, unsigned int);
-using SetDefaultFn = int(__stdcall*)(void*, unsigned int);
+// NVML on Windows is cdecl (DECLDIR is only dllimport). x64 ignores stdcall vs cdecl,
+// but GetFanSpeedRPM still needs the versioned struct, not (handle, fan, rpm*).
+using InitFn = int (*)();
+using ShutdownFn = int (*)();
+using CountFn = int (*)(unsigned int*);
+using HandleFn = int (*)(unsigned int, void**);
+using NameFn = int (*)(void*, char*, unsigned int);
+using TempFn = int (*)(void*, int, unsigned int*);
+using PowerFn = int (*)(void*, unsigned int*);
+using ClockFn = int (*)(void*, int, unsigned int*);
+using FanFn = int (*)(void*, unsigned int*);
+using FanSpeedV2Fn = int (*)(void*, unsigned int, unsigned int*);
+using FanCountFn = int (*)(void*, unsigned int*);
+using SetFanFn = int (*)(void*, unsigned int, unsigned int);
+using SetDefaultFn = int (*)(void*, unsigned int);
+
+struct FanSpeedInfo {
+  unsigned int version;
+  unsigned int fan;
+  unsigned int speed;
+};
+
+using FanRpmFn = int (*)(void*, FanSpeedInfo*);
+using UtilFn = int (*)(void*, void*);
+
+constexpr unsigned int kFanSpeedInfoV1 = static_cast<unsigned int>(sizeof(FanSpeedInfo) | (1u << 24));
 
 void* load_symbol(HMODULE module, const char* name) { return reinterpret_cast<void*>(GetProcAddress(module, name)); }
 
@@ -55,6 +69,7 @@ bool Nvml::open() {
   power_ = load_symbol(module, "nvmlDeviceGetPowerUsage");
   clock_ = load_symbol(module, "nvmlDeviceGetClockInfo");
   fan_speed_ = load_symbol(module, "nvmlDeviceGetFanSpeed");
+  fan_speed_v2_ = load_symbol(module, "nvmlDeviceGetFanSpeed_v2");
   fan_rpm_ = load_symbol(module, "nvmlDeviceGetFanSpeedRPM");
   fan_count_ = load_symbol(module, "nvmlDeviceGetNumFans");
   set_speed_ = load_symbol(module, "nvmlDeviceSetFanSpeed_v2");
@@ -81,7 +96,15 @@ void Nvml::close() {
   ready_ = false;
   init_ = shutdown_ = count_ = handle_ = name_ = nullptr;
   temperature_ = utilization_ = power_ = clock_ = nullptr;
-  fan_speed_ = fan_rpm_ = fan_count_ = set_speed_ = set_default_ = nullptr;
+  fan_speed_ = fan_speed_v2_ = fan_rpm_ = fan_count_ = set_speed_ = set_default_ = nullptr;
+}
+
+void Nvml::abandon(std::string why) {
+  detail_ = std::move(why);
+  ready_ = false;
+  init_ = shutdown_ = count_ = handle_ = name_ = nullptr;
+  temperature_ = utilization_ = power_ = clock_ = nullptr;
+  fan_speed_ = fan_speed_v2_ = fan_rpm_ = fan_count_ = set_speed_ = set_default_ = nullptr;
 }
 
 std::vector<NvmlGpu> Nvml::sample() {
@@ -106,7 +129,7 @@ std::vector<NvmlGpu> Nvml::sample() {
         unsigned int gpu;
         unsigned int memory;
       } rates{};
-      if (reinterpret_cast<int(__stdcall*)(void*, void*)>(utilization_)(handle, &rates) == 0) {
+      if (reinterpret_cast<UtilFn>(utilization_)(handle, &rates) == 0) {
         gpu.load = rates.gpu;
         gpu.loadKnown = true;
       }
@@ -121,17 +144,26 @@ std::vector<NvmlGpu> Nvml::sample() {
     }
     unsigned int fans = 1;
     if (fan_count_ && reinterpret_cast<FanCountFn>(fan_count_)(handle, &fans) != 0) fans = 1;
+    if (fans == 0) fans = 1;
     if (fans > 8) fans = 8;
     gpu.canControl = set_speed_ != nullptr;
     for (unsigned int fan = 0; fan < fans; ++fan) {
       NvmlFan reading;
-      if (fan == 0 && fan_speed_ && reinterpret_cast<FanFn>(fan_speed_)(handle, &value) == 0) {
+      if (fan_speed_v2_ && reinterpret_cast<FanSpeedV2Fn>(fan_speed_v2_)(handle, fan, &value) == 0) {
+        reading.percent = value;
+        reading.percentKnown = true;
+      } else if (fan == 0 && fan_speed_ && reinterpret_cast<FanFn>(fan_speed_)(handle, &value) == 0) {
         reading.percent = value;
         reading.percentKnown = true;
       }
-      if (fan_rpm_ && reinterpret_cast<FanRpmFn>(fan_rpm_)(handle, fan, &value) == 0 && value > 0 && value < 20000) {
-        reading.rpm = value;
-        reading.rpmKnown = true;
+      if (fan_rpm_) {
+        FanSpeedInfo info{};
+        info.version = kFanSpeedInfoV1;
+        info.fan = fan;
+        if (reinterpret_cast<FanRpmFn>(fan_rpm_)(handle, &info) == 0 && info.speed > 0 && info.speed < 20000) {
+          reading.rpm = info.speed;
+          reading.rpmKnown = true;
+        }
       }
       if (fan == 0 || reading.rpmKnown || reading.percentKnown || gpu.canControl) gpu.fans.push_back(reading);
     }

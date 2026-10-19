@@ -34,6 +34,7 @@ class Nvml {
 
   bool open();
   void close();
+  void abandon(std::string why);
   bool ready() const { return ready_; }
   const std::string& detail() const { return detail_; }
   std::vector<NvmlGpu> sample();
@@ -54,6 +55,7 @@ class Nvml {
   void* power_ = nullptr;
   void* clock_ = nullptr;
   void* fan_speed_ = nullptr;
+  void* fan_speed_v2_ = nullptr;
   void* fan_rpm_ = nullptr;
   void* fan_count_ = nullptr;
   void* set_speed_ = nullptr;

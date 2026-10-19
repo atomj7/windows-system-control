@@ -388,6 +388,31 @@ bool setupdi_detail(HDEVINFO info, SP_DEVICE_INTERFACE_DATA& interfaceData, std:
   return false;
 }
 
+void enumerate_enumerator(const wchar_t* enumerator, std::vector<UsbHit>& hits) {
+  HDEVINFO info = SetupDiGetClassDevsW(nullptr, enumerator, nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+  if (info == INVALID_HANDLE_VALUE) return;
+  for (DWORD index = 0;; ++index) {
+    SP_DEVINFO_DATA deviceInfo{};
+    deviceInfo.cbSize = sizeof(deviceInfo);
+    if (!SetupDiEnumDeviceInfo(info, index, &deviceInfo)) break;
+    wchar_t hardware[1024] = {};
+    wchar_t description[256] = {};
+    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(hardware),
+                                      sizeof(hardware), nullptr);
+    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_DEVICEDESC, nullptr, reinterpret_cast<PBYTE>(description),
+                                      sizeof(description), nullptr);
+    UsbHit hit;
+    hit.name = wide_to_utf8(description);
+    if (!parse_vid_pid(wide_to_utf8(hardware), hit.vid, hit.pid)) continue;
+    bool seen = false;
+    for (const auto& existing : hits) {
+      if (existing.vid == hit.vid && existing.pid == hit.pid) seen = true;
+    }
+    if (!seen) hits.push_back(std::move(hit));
+  }
+  SetupDiDestroyDeviceInfoList(info);
+}
+
 void enumerate_guid(const GUID& guid, std::vector<UsbHit>& hits) {
   HDEVINFO info = SetupDiGetClassDevsW(&guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
   if (info == INVALID_HANDLE_VALUE) return;
@@ -426,6 +451,8 @@ std::vector<UsbHit> enumerate_usb() {
   GUID hid{};
   HidD_GetHidGuid(&hid);
   enumerate_guid(hid, hits);
+  enumerate_enumerator(L"USB", hits);
+  enumerate_enumerator(L"HID", hits);
   return hits;
 }
 
@@ -508,12 +535,15 @@ int nvml_sample_cb(void* raw) {
 
 std::vector<NvmlGpu> nvml_sample_safe(Nvml& nvml) {
   std::vector<NvmlGpu> gpus;
+  if (!nvml.ready()) return gpus;
   unsigned long code = 0;
   std::pair<Nvml*, std::vector<NvmlGpu>*> bag{&nvml, &gpus};
   if (helios_protect(nvml_sample_cb, &bag, &code) < 0) {
     char buffer[16];
     std::snprintf(buffer, sizeof(buffer), "%08lX", code);
-    log_error(std::string("NVML sample упал, код 0x") + buffer);
+    nvml.abandon(std::string("NVML sample упал, код 0x") + buffer +
+                 ". Опрос GPU отключён, чтобы не долбить драйвер. DXGI/WMI имя карты остаётся.");
+    log_error(nvml.detail());
     return {};
   }
   return gpus;
@@ -754,6 +784,7 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
 
   log_info("обзор: NVML sample");
   std::vector<NvmlGpu> gpus = nvmlReady_ ? nvml_sample_safe(nvml_) : std::vector<NvmlGpu>{};
+  if (!nvml_.ready()) nvmlReady_ = false;
   log_info("обзор: DXGI");
   int dxgiCount = 0;
   bool amdSeen = false;
@@ -841,7 +872,8 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   for (const auto& hit : usb) {
     const bool hub = contains_ci(hit.name, "hub") || contains_ci(hit.name, "концентратор");
     const KnownHardware* known = find_known_device(hit.vid, hit.pid);
-    const bool interesting = known || (is_lighting_vendor(hit.vid) && looks_like_lighting(hit.name));
+    const bool iteController = hit.vid == 0x048D && hit.pid != 0x1234;
+    const bool interesting = known || iteController || (is_lighting_vendor(hit.vid) && looks_like_lighting(hit.name));
     if (hub && !interesting) {
       ++hubs;
       continue;
@@ -874,7 +906,14 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     devices.push_back(std::move(device));
     ++promoted;
   }
-  log_info("USB: " + std::to_string(usb.size()) + " устройств, подсветка: " + std::to_string(promoted));
+  std::string usbList;
+  for (const auto& hit : usb) {
+    if (!usbList.empty()) usbList += ", ";
+    usbList += hex4(hit.vid) + ":" + hex4(hit.pid);
+    if (!hit.name.empty()) usbList += " " + hit.name;
+  }
+  log_info("USB: " + std::to_string(usb.size()) + " устройств, подсветка: " + std::to_string(promoted) +
+           (usbList.empty() ? "" : " — " + usbList));
   report(ScanStep{"usb", "USB", "Устройств: " + std::to_string(usb.size()) + ", хабы скрыты: " + std::to_string(hubs) +
                                     ", подсветка и охлаждение: " + std::to_string(promoted),
                   usb.empty() ? "warn" : "ok"});
@@ -919,7 +958,8 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
                   pdhQuery_ ? "ok" : "warn"});
 
   drivers_.push_back(DriverState{"hid", "HID", "ready", "Встроенный стек Windows. Им уходит подсветка и ШИМ NZXT.", ""});
-  drivers_.push_back(DriverState{"nvml", "NVIDIA NVML", nvmlReady_ ? "ready" : "missing", nvmlReady_ ? nvml_.detail() : nvml_.detail(), ""});
+  drivers_.push_back(DriverState{"nvml", "NVIDIA NVML", nvmlReady_ ? "ready" : nvml_.detail().find("упал") != std::string::npos ? "unavailable" : "missing",
+                                 nvml_.detail(), ""});
   const bool adl = library_present(L"atiadlxx.dll") || library_present(L"atiadlxy.dll");
   drivers_.push_back(DriverState{"adl", "AMD ADL", !amdSeen ? "skipped" : adl ? "ready" : "missing",
                                  !amdSeen ? "Видеокарта AMD не видна в DXGI."
@@ -948,7 +988,10 @@ void WindowsPlatform::sample(std::vector<Device>& devices) {
       if (sensor.id == "cpu_load" && cpuLoadKnown_) sensor.value = cpuLoad_;
     }
   }
-  if (!nvmlReady_) return;
+  if (!nvmlReady_ || !nvml_.ready()) {
+    nvmlReady_ = false;
+    return;
+  }
   for (const auto& gpu : nvml_sample_safe(nvml_)) {
     for (auto& device : devices) {
       if (device.nvmlIndex != gpu.index || device.backend != "nvml") continue;
@@ -975,6 +1018,7 @@ void WindowsPlatform::sample(std::vector<Device>& devices) {
       }
     }
   }
+  if (!nvml_.ready()) nvmlReady_ = false;
 }
 
 void WindowsPlatform::sample_cpu() {
