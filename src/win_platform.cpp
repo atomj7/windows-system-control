@@ -4,6 +4,7 @@
 #include "curve.hpp"
 #include "log.hpp"
 #include "util.hpp"
+#include "win_fusion.hpp"
 #include "win_nzxt.hpp"
 #include "win_seh.h"
 
@@ -18,6 +19,10 @@
 #include <setupapi.h>
 #include <wbemidl.h>
 #include <winsvc.h>
+
+extern "C" {
+#include <hidsdi.h>
+}
 
 #include <algorithm>
 #include <cmath>
@@ -330,32 +335,64 @@ struct UsbHit {
   uint16_t pid = 0;
 };
 
-std::vector<UsbHit> enumerate_usb() {
-  std::vector<UsbHit> hits;
-  HDEVINFO info = SetupDiGetClassDevsW(&kUsbDevice, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-  if (info == INVALID_HANDLE_VALUE) return hits;
+bool setupdi_detail(HDEVINFO info, SP_DEVICE_INTERFACE_DATA& interfaceData, std::vector<uint8_t>& buffer, SP_DEVINFO_DATA* deviceInfo) {
+  DWORD needed = 0;
+  SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, nullptr, 0, &needed, nullptr);
+  if (needed < 8) return false;
+  buffer.assign(needed, 0);
+  auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
+  const DWORD sizes[] = {static_cast<DWORD>(sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)),
+                         static_cast<DWORD>(offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)), 8};
+  SP_DEVINFO_DATA local{};
+  local.cbSize = sizeof(local);
+  SP_DEVINFO_DATA* out = deviceInfo ? deviceInfo : &local;
+  for (DWORD cb : sizes) {
+    std::fill(buffer.begin(), buffer.end(), 0);
+    detail->cbSize = cb;
+    out->cbSize = sizeof(*out);
+    if (SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, out)) return true;
+  }
+  return false;
+}
+
+void enumerate_guid(const GUID& guid, std::vector<UsbHit>& hits) {
+  HDEVINFO info = SetupDiGetClassDevsW(&guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+  if (info == INVALID_HANDLE_VALUE) return;
   SP_DEVICE_INTERFACE_DATA interfaceData{};
   interfaceData.cbSize = sizeof(interfaceData);
-  for (DWORD index = 0; SetupDiEnumDeviceInterfaces(info, nullptr, &kUsbDevice, index, &interfaceData); ++index) {
-    DWORD needed = 0;
-    SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, nullptr, 0, &needed, nullptr);
-    if (needed < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)) continue;
-    std::vector<uint8_t> buffer(needed);
-    auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
-    detail->cbSize = offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t);
+  for (DWORD index = 0; SetupDiEnumDeviceInterfaces(info, nullptr, &guid, index, &interfaceData); ++index) {
+    std::vector<uint8_t> buffer;
     SP_DEVINFO_DATA deviceInfo{};
     deviceInfo.cbSize = sizeof(deviceInfo);
-    if (!SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, &deviceInfo)) continue;
-    wchar_t hardware[512] = {};
+    if (!setupdi_detail(info, interfaceData, buffer, &deviceInfo)) continue;
+    wchar_t hardware[1024] = {};
     wchar_t description[256] = {};
-    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(hardware), sizeof(hardware), nullptr);
-    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_DEVICEDESC, nullptr, reinterpret_cast<PBYTE>(description), sizeof(description), nullptr);
+    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(hardware),
+                                      sizeof(hardware), nullptr);
+    SetupDiGetDeviceRegistryPropertyW(info, &deviceInfo, SPDRP_DEVICEDESC, nullptr, reinterpret_cast<PBYTE>(description),
+                                      sizeof(description), nullptr);
     UsbHit hit;
     hit.name = wide_to_utf8(description);
-    if (!parse_vid_pid(wide_to_utf8(hardware), hit.vid, hit.pid)) continue;
-    hits.push_back(std::move(hit));
+    const std::string ids = wide_to_utf8(hardware);
+    if (!parse_vid_pid(ids, hit.vid, hit.pid)) {
+      auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
+      if (!parse_vid_pid(wide_to_utf8(detail->DevicePath), hit.vid, hit.pid)) continue;
+    }
+    bool seen = false;
+    for (const auto& existing : hits) {
+      if (existing.vid == hit.vid && existing.pid == hit.pid) seen = true;
+    }
+    if (!seen) hits.push_back(std::move(hit));
   }
   SetupDiDestroyDeviceInfoList(info);
+}
+
+std::vector<UsbHit> enumerate_usb() {
+  std::vector<UsbHit> hits;
+  enumerate_guid(kUsbDevice, hits);
+  GUID hid{};
+  HidD_GetHidGuid(&hid);
+  enumerate_guid(hid, hits);
   return hits;
 }
 
@@ -488,12 +525,23 @@ int dxgi_enum_cb(void* raw) {
     if (desc.VendorId == 0x10DE) {
       const NvmlGpu* match = nullptr;
       for (const auto& item : *bag->gpus) {
-        if (!item.name.empty() && (contains_ci(name, item.name) || contains_ci(item.name, name) || !match)) {
+        if (!item.name.empty() && (contains_ci(name, item.name) || contains_ci(item.name, name))) {
           match = &item;
-          if (contains_ci(name, item.name) || contains_ci(item.name, name)) break;
+          break;
         }
       }
-      if (!match && !bag->gpus->empty()) match = &bag->gpus->front();
+      if (!match) {
+        for (const auto& item : *bag->gpus) {
+          bool taken = false;
+          for (const auto& device : *bag->devices) {
+            if (device.backend == "nvml" && device.nvmlIndex == item.index) taken = true;
+          }
+          if (!taken) {
+            match = &item;
+            break;
+          }
+        }
+      }
       if (match) {
         gpu.backend = "nvml";
         gpu.nvmlIndex = match->index;
@@ -619,7 +667,9 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     board.connection = "SMBIOS";
     board.hardware = "monitor";
     board.backend = "wmi";
-    board.note = "Сама плата без USB-контроллера подсветки только называется. Крыльчатки SuperIO появятся после PawnIO и карты регистров чипа — их нельзя угадывать.";
+    board.note =
+        "Имя платы из SMBIOS. На B450 RGB Fusion обычно сидит на USB ITE (048D:8297), не на самой микросхеме SuperIO. Если "
+        "контроллер найдётся, здесь появятся зоны цвета. Крыльчатки чипа платы — отдельно, через PawnIO.";
     devices.push_back(std::move(board));
   }
 
@@ -681,6 +731,51 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     std::snprintf(buffer, sizeof(buffer), "%08lX", dxgiCode);
     log_error(std::string("DXGI упала, код 0x") + buffer);
   }
+  if (dxgiCount == 0) {
+    for (const auto& gpuSample : gpus) {
+      Device gpu;
+      gpu.id = "gpu-nvml-" + std::to_string(gpuSample.index);
+      gpu.name = gpuSample.name.empty() ? "NVIDIA" : gpuSample.name;
+      gpu.vendor = "NVIDIA";
+      gpu.kind = "gpu";
+      gpu.bus = "nvml";
+      gpu.connection = "NVML";
+      gpu.backend = "nvml";
+      gpu.nvmlIndex = gpuSample.index;
+      gpu.hardware = gpuSample.canControl ? "live" : "monitor";
+      gpu.note = gpuSample.canControl
+                     ? "Телеметрия NVML. Заводская кривая остаётся, пока не включишь кривую Helios или ручной режим."
+                     : "NVML читает датчики, запись оборотов эта библиотека не отдала.";
+      if (gpuSample.tempKnown) {
+        gpu.sensors.push_back(
+            make_sensor("gpu" + std::to_string(gpuSample.index) + "_temp", "GPU", "°C", "temperature", gpuSample.temp));
+      }
+      if (gpuSample.loadKnown) {
+        gpu.sensors.push_back(
+            make_sensor("gpu" + std::to_string(gpuSample.index) + "_load", "Загрузка", "%", "load", gpuSample.load));
+      }
+      int fanIndex = 0;
+      for (const auto& fanReading : gpuSample.fans) {
+        Fan fan;
+        fan.id = "fan" + std::to_string(fanIndex);
+        fan.name = gpuSample.fans.size() == 1 ? "Крыльчатка" : "Крыльчатка " + std::to_string(fanIndex + 1);
+        fan.channel = fanIndex;
+        fan.controllable = gpuSample.canControl;
+        fan.mode = "auto";
+        fan.minDuty = 30;
+        fan.rpm = fanReading.rpm;
+        fan.rpmKnown = fanReading.rpmKnown;
+        fan.duty = fanReading.percentKnown ? fanReading.percent : 40;
+        fan.dutyKnown = fanReading.percentKnown;
+        fan.source = gpu.sensors.empty() ? "cpu_load" : gpu.sensors[0].id;
+        fan.curve = curve_balanced();
+        gpu.fans.push_back(std::move(fan));
+        ++fanIndex;
+      }
+      devices.push_back(std::move(gpu));
+      ++dxgiCount;
+    }
+  }
   if (dxgiCount == 0 && com.ok()) {
     auto adapters = wmi.query(L"ROOT\\CIMV2", L"SELECT Name, AdapterRAM, PNPDeviceID FROM Win32_VideoController",
                               {L"Name", L"AdapterRAM", L"PNPDeviceID"});
@@ -726,6 +821,18 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     bus.promoted = interesting;
     bus_.push_back(bus);
     if (!interesting) continue;
+    if (known && std::string(known->backend) == "fusion") {
+      Device* board = nullptr;
+      for (auto& device : devices) {
+        if (device.id == "board") board = &device;
+      }
+      if (board) {
+        fusion_attach_board(*board, hit.vid, hit.pid);
+        hid_[board->id] = hid_paths_for(hit.vid, hit.pid);
+        ++promoted;
+        continue;
+      }
+    }
     const std::string key = hex4(hit.vid) + hex4(hit.pid);
     const int ordinal = ordinals[key]++;
     Device device = known && std::string(known->backend) == "nzxt" ? make_nzxt_device(*known, ordinal, hit.name)
@@ -734,9 +841,10 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     devices.push_back(std::move(device));
     ++promoted;
   }
+  log_info("USB: " + std::to_string(usb.size()) + " устройств, подсветка: " + std::to_string(promoted));
   report(ScanStep{"usb", "USB", "Устройств: " + std::to_string(usb.size()) + ", хабы скрыты: " + std::to_string(hubs) +
                                     ", подсветка и охлаждение: " + std::to_string(promoted),
-                  "ok"});
+                  usb.empty() ? "warn" : "ok"});
 
   sample_cpu();
   for (auto& device : devices) {
@@ -862,6 +970,11 @@ void WindowsPlatform::sample_cpu() {
 }
 
 std::string WindowsPlatform::set_zone(const Device& device, const Zone& zone) {
+  if (device.backend == "fusion") {
+    const auto found = hid_.find(device.id);
+    if (found == hid_.end()) return "Контроллер RGB Fusion потерян. Пересканируй.";
+    return fusion_set_light(found->second, zone.channel, zone);
+  }
   if (device.backend != "nzxt") return {};
   const auto found = hid_.find(device.id);
   if (found == hid_.end()) return "Канал NZXT потерян. Пересканируй.";

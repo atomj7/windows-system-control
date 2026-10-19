@@ -34,8 +34,9 @@ constexpr KnownHardware kKnown[] = {
     {0x1B1C, 0x0C10, "Corsair", "Commander Pro", "fan_controller", "identified", 2, 6, false},
     {0x1B1C, 0x0C22, "Corsair", "H150i RGB PRO XT", "cooler", "identified", 1, 1, false},
 
-    {0x048D, 0x8297, "GIGABYTE", "RGB Fusion 2.0", "motherboard", "identified", 4, 0, false},
-    {0x048D, 0x5702, "GIGABYTE", "RGB Fusion 2.0", "motherboard", "identified", 4, 0, false},
+    {0x048D, 0x8297, "GIGABYTE", "RGB Fusion 2.0", "motherboard", "fusion", 3, 0, false},
+    {0x048D, 0x5702, "GIGABYTE", "RGB Fusion 2.0", "motherboard", "fusion", 3, 0, false},
+    {0x048D, 0x5711, "GIGABYTE", "RGB Fusion 2.0", "motherboard", "fusion", 3, 0, false},
 
     {0x1462, 0x1562, "MSI", "Mystic Light", "motherboard", "identified", 1, 0, false},
     {0x1462, 0x1563, "MSI", "Mystic Light", "motherboard", "identified", 1, 0, false},

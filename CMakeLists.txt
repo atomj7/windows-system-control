@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(helios VERSION 0.3.0 LANGUAGES C CXX)
+project(helios VERSION 0.3.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,7 @@ if(WIN32)
     src/win_platform.cpp
     src/win_nvml.cpp
     src/win_nzxt.cpp
+    src/win_fusion.cpp
     src/win_seh.cpp
   )
   target_compile_definitions(helios_core PUBLIC

@@ -165,6 +165,21 @@ bool same_usb(const Device& device, const OrgbController& controller) {
   return device.vid != 0 && device.vid == controller.vid && device.pid == controller.pid;
 }
 
+bool same_openrgb_name(const Device& device, const OrgbController& controller) {
+  const std::string blob = lower_copy(controller.name + " " + controller.vendor + " " + controller.description);
+  if (device.kind == "memory") {
+    return blob.find("dram") != std::string::npos || blob.find("dimm") != std::string::npos || blob.find("ram") != std::string::npos ||
+           blob.find("trident") != std::string::npos || blob.find("vengeance") != std::string::npos ||
+           blob.find("fury") != std::string::npos || contains_ci(blob, device.name);
+  }
+  if (device.kind == "motherboard") {
+    return blob.find("fusion") != std::string::npos || blob.find("gigabyte") != std::string::npos ||
+           blob.find("ite") != std::string::npos || blob.find("motherboard") != std::string::npos ||
+           contains_ci(blob, device.name);
+  }
+  return false;
+}
+
 }  // namespace
 
 Engine::Engine(std::unique_ptr<Platform> platform, std::string dataDir)
@@ -267,10 +282,20 @@ void Engine::scanOnce() {
   for (auto& controller : bridge.controllers) {
     Device* matched = nullptr;
     for (auto& device : merged) {
-      if (device.backend == "nzxt" || device.backend == "sim") continue;
+      if (device.backend == "nzxt" || device.backend == "sim" || device.backend == "fusion") continue;
       if (same_usb(device, controller) && bindings.find(device.id) == bindings.end()) {
         matched = &device;
         break;
+      }
+    }
+    if (!matched) {
+      for (auto& device : merged) {
+        if (device.backend == "nzxt" || device.backend == "sim" || device.backend == "fusion") continue;
+        if (bindings.find(device.id) != bindings.end()) continue;
+        if (same_openrgb_name(device, controller)) {
+          matched = &device;
+          break;
+        }
       }
     }
     if (matched) {

@@ -65,11 +65,21 @@ std::vector<std::wstring> hid_paths_for(uint16_t vid, uint16_t pid) {
   for (DWORD index = 0; SetupDiEnumDeviceInterfaces(info, nullptr, &guid, index, &interfaceData); ++index) {
     DWORD needed = 0;
     SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, nullptr, 0, &needed, nullptr);
-    if (needed < offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)) continue;
+    if (needed < 8) continue;
     std::vector<uint8_t> buffer(needed);
     auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buffer.data());
-    detail->cbSize = offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t);
-    if (!SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, nullptr)) continue;
+    const DWORD sizes[] = {static_cast<DWORD>(sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)),
+                           static_cast<DWORD>(offsetof(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath) + sizeof(wchar_t)), 8};
+    bool got = false;
+    for (DWORD cb : sizes) {
+      std::fill(buffer.begin(), buffer.end(), 0);
+      detail->cbSize = cb;
+      if (SetupDiGetDeviceInterfaceDetailW(info, &interfaceData, detail, needed, nullptr, nullptr)) {
+        got = true;
+        break;
+      }
+    }
+    if (!got) continue;
     HANDLE handle = CreateFileW(detail->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE) continue;
     HIDD_ATTRIBUTES attributes{};
