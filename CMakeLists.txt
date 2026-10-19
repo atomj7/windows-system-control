@@ -16,6 +16,7 @@ add_library(helios_core
   src/engine.cpp
   src/http.cpp
   src/net.cpp
+  src/log.cpp
 )
 target_include_directories(helios_core PUBLIC src)
 
@@ -41,6 +42,7 @@ if(WIN32)
     dxgi
     pdh
     shell32
+    user32
   )
 else()
   target_link_libraries(helios_core PUBLIC pthread)

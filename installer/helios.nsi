@@ -18,8 +18,9 @@ Section "Helios"
   File /r "payload\ui"
 
   CreateDirectory "$SMPROGRAMS\Helios"
-  CreateShortCut "$SMPROGRAMS\Helios\Helios.lnk" "$INSTDIR\Helios.cmd" "" "$INSTDIR\helios.exe" 0
-  CreateShortCut "$DESKTOP\Helios.lnk" "$INSTDIR\Helios.cmd" "" "$INSTDIR\helios.exe" 0
+  CreateShortCut "$SMPROGRAMS\Helios\Helios.lnk" "$INSTDIR\Helios.cmd" "" "$INSTDIR\helios.exe" 0 SW_SHOWNORMAL
+  CreateShortCut "$DESKTOP\Helios.lnk" "$INSTDIR\Helios.cmd" "" "$INSTDIR\helios.exe" 0 SW_SHOWNORMAL
+  CreateShortCut "$SMPROGRAMS\Helios\Helios (окно).lnk" "$INSTDIR\helios.exe" "--hardware" "$INSTDIR\helios.exe" 0 SW_SHOWNORMAL
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Helios" "InstallDir" "$INSTDIR"

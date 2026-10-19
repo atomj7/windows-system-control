@@ -1,10 +1,12 @@
 #include "http.hpp"
 
+#include "log.hpp"
 #include "net.hpp"
 #include "util.hpp"
 
 #include <cctype>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -261,10 +263,17 @@ void handle(Socket socket, Engine& engine, const std::filesystem::path& webRoot)
 
 }  // namespace
 
-int serve_http(Engine& engine, const std::string& host, int port, const std::string& webRoot) {
-  if (!net_startup()) return 1;
+int serve_http(Engine& engine, const std::string& host, int port, const std::string& webRoot,
+               const std::function<void()>& ready) {
+  if (!net_startup()) {
+    log_error("сокеты Windows не поднялись");
+    return 1;
+  }
   Socket server = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  if (server == kInvalidSocket) return 1;
+  if (server == kInvalidSocket) {
+    log_error("не удалось создать сокет");
+    return 1;
+  }
   int reuse = 1;
   setsockopt(server, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<char*>(&reuse), sizeof(reuse));
   sockaddr_in address{};
@@ -272,12 +281,19 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
   address.sin_port = htons(static_cast<uint16_t>(port));
   if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
     close_socket(server);
+    log_error("неверный адрес прослушивания");
     return 1;
   }
   if (bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 || listen(server, 32) != 0) {
+#ifdef _WIN32
+    log_error("порт " + std::to_string(port) + " занят или закрыт, код " + std::to_string(WSAGetLastError()));
+#else
+    log_error("порт " + std::to_string(port) + " занят или закрыт");
+#endif
     close_socket(server);
     return 1;
   }
+  if (ready) ready();
   const std::filesystem::path root = webRoot;
   while (!engine.stopped()) {
     sockaddr_in clientAddress{};
@@ -288,7 +304,17 @@ int serve_http(Engine& engine, const std::string& host, int port, const std::str
 #endif
     Socket client = accept(server, reinterpret_cast<sockaddr*>(&clientAddress), &length);
     if (client == kInvalidSocket) continue;
-    std::thread([client, &engine, root] { handle(client, engine, root); }).detach();
+    std::thread([client, &engine, root] {
+      try {
+        handle(client, engine, root);
+      } catch (const std::exception& ex) {
+        log_error(std::string("запрос: ") + ex.what());
+        close_socket(client);
+      } catch (...) {
+        log_error("запрос упал");
+        close_socket(client);
+      }
+    }).detach();
   }
   close_socket(server);
   net_shutdown();

@@ -61,7 +61,7 @@ New-Item -ItemType Directory -Force -Path $programs | Out-Null
 $lnk = $wsh.CreateShortcut((Join-Path $programs "Helios.lnk"))
 $lnk.TargetPath = Join-Path $dest "Helios.cmd"
 $lnk.WorkingDirectory = $dest
-$lnk.WindowStyle = 7
+$lnk.WindowStyle = 1
 $lnk.Description = "Helios — свет и воздух"
 $lnk.Save()
 
@@ -69,7 +69,7 @@ $desktop = [Environment]::GetFolderPath("Desktop")
 $desk = $wsh.CreateShortcut((Join-Path $desktop "Helios.lnk"))
 $desk.TargetPath = Join-Path $dest "Helios.cmd"
 $desk.WorkingDirectory = $dest
-$desk.WindowStyle = 7
+$desk.WindowStyle = 1
 $desk.Description = "Helios — свет и воздух"
 $desk.Save()
 

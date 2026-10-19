@@ -1,7 +1,9 @@
 #include "engine.hpp"
 #include "http.hpp"
+#include "log.hpp"
 #include "platform.hpp"
 
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -14,35 +16,42 @@
 
 namespace {
 
-std::string executable_dir(const char* argv0) {
+std::filesystem::path executable_dir(const char* argv0) {
 #ifdef _WIN32
   wchar_t buffer[MAX_PATH];
   const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-  if (length > 0) return std::filesystem::path(buffer).parent_path().string();
+  if (length > 0) return std::filesystem::path(std::wstring(buffer, length)).parent_path();
 #else
   char buffer[4096];
   const ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
   if (length > 0) {
     buffer[length] = 0;
-    return std::filesystem::path(buffer).parent_path().string();
+    return std::filesystem::path(buffer).parent_path();
   }
 #endif
-  return std::filesystem::absolute(argv0).parent_path().string();
+  return std::filesystem::absolute(argv0).parent_path();
 }
 
-std::string find_web_root(const std::string& exeDir) {
+std::string find_web_root(const std::filesystem::path& exeDir) {
   const std::filesystem::path candidates[] = {
       std::filesystem::current_path() / "ui" / "dist",
-      std::filesystem::path(exeDir) / "ui" / "dist",
-      std::filesystem::path(exeDir) / ".." / "ui" / "dist",
-      std::filesystem::path(exeDir) / ".." / ".." / "ui" / "dist",
+      exeDir / "ui" / "dist",
+      exeDir / "dist",
+      exeDir / ".." / "ui" / "dist",
+      exeDir / ".." / ".." / "ui" / "dist",
   };
   for (const auto& candidate : candidates) {
     std::error_code error;
     if (std::filesystem::is_regular_file(candidate / "index.html", error)) return std::filesystem::weakly_canonical(candidate).string();
   }
-  return (std::filesystem::current_path() / "ui" / "dist").string();
+  return (exeDir / "ui" / "dist").string();
 }
+
+#ifdef _WIN32
+void open_browser(const std::string& url) {
+  ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+#endif
 
 }  // namespace
 
@@ -50,7 +59,7 @@ int main(int argc, char** argv) {
   int port = 47621;
   bool simulate = false;
   bool openBrowser = true;
-  std::string dataDir = "data";
+  std::string dataDir;
 #ifdef _WIN32
   bool defaultSimulate = false;
 #else
@@ -82,21 +91,43 @@ int main(int argc, char** argv) {
     }
   }
 
-  auto platform = make_platform(simulate);
-  Engine engine(std::move(platform), dataDir);
-  engine.start();
-  const std::string web = find_web_root(executable_dir(argv[0]));
-  const std::string url = "http://127.0.0.1:" + std::to_string(port);
-  std::cout << "Helios слушает " << url << "\n";
-  std::cout << "Интерфейс: " << web << "\n";
+  try {
+    const auto exeDir = executable_dir(argv[0]);
 #ifdef _WIN32
-  if (openBrowser) {
-    ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-  }
-#else
-  (void)openBrowser;
+    SetCurrentDirectoryW(exeDir.wstring().c_str());
 #endif
-  const int code = serve_http(engine, "127.0.0.1", port, web);
-  if (code != 0) std::cerr << "Не удалось открыть порт " << port << "\n";
-  return code;
+    log_open(exeDir / "helios.log");
+    log_info("старт из " + exeDir.string());
+    if (dataDir.empty()) dataDir = (exeDir / "data").string();
+    const std::string web = find_web_root(exeDir);
+    log_info(std::string("режим ") + (simulate ? "стенд" : "железо") + ", интерфейс " + web);
+
+    auto platform = make_platform(simulate);
+    Engine engine(std::move(platform), dataDir);
+    engine.start();
+    const std::string url = "http://127.0.0.1:" + std::to_string(port);
+    const int code = serve_http(engine, "127.0.0.1", port, web, [&] {
+      log_info("слушает " + url);
+      std::cout << "Helios слушает " << url << "\n";
+      std::cout << "Интерфейс: " << web << "\n";
+      std::cout << "Окно не закрывай — это служба. Остановка: Ctrl+C.\n";
+#ifdef _WIN32
+      if (openBrowser) open_browser(url);
+#else
+      (void)openBrowser;
+#endif
+    });
+    if (code != 0) {
+      show_fatal("Не удалось открыть порт " + std::to_string(port) +
+                 ".\nЗапусти Helios.cmd из папки программы и пришли helios.log.");
+      return code;
+    }
+    return 0;
+  } catch (const std::exception& ex) {
+    show_fatal(std::string("Helios остановился: ") + ex.what());
+    return 1;
+  } catch (...) {
+    show_fatal("Helios остановился без текста ошибки.");
+    return 1;
+  }
 }

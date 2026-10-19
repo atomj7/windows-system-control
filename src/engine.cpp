@@ -2,14 +2,17 @@
 
 #include "catalog.hpp"
 #include "curve.hpp"
+#include "log.hpp"
 #include "util.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <chrono>
+#include <string>
 
 namespace {
 
@@ -183,18 +186,30 @@ void Engine::start() {
 }
 
 void Engine::scanLoop() {
-  do {
-    scanOnce();
-    std::unique_lock lock(mu_);
-    cv_.wait(lock, [&] { return stop_ || rescan_; });
-    if (stop_) return;
-  } while (!stop_);
+  try {
+    do {
+      scanOnce();
+      std::unique_lock lock(mu_);
+      cv_.wait(lock, [&] { return stop_ || rescan_; });
+      if (stop_) return;
+    } while (!stop_);
+  } catch (const std::exception& ex) {
+    log_error(std::string("поток обзора: ") + ex.what());
+  } catch (...) {
+    log_error("поток обзора упал");
+  }
 }
 
 void Engine::tickLoop() {
-  while (!stop_) {
-    tick();
-    for (int i = 0; i < 10 && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  try {
+    while (!stop_) {
+      tick();
+      for (int i = 0; i < 10 && !stop_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  } catch (const std::exception& ex) {
+    log_error(std::string("поток метрик: ") + ex.what());
+  } catch (...) {
+    log_error("поток метрик упал");
   }
 }
 
@@ -229,7 +244,15 @@ void Engine::scanOnce() {
   std::vector<Device> scanned;
   {
     std::lock_guard io(io_);
-    scanned = platform_->scan(report);
+    try {
+      scanned = platform_->scan(report);
+    } catch (const std::exception& ex) {
+      report(ScanStep{"scan", "Обзор железа", std::string("Сбой обзора: ") + ex.what(), "warn"});
+      log_error(std::string("обзор: ") + ex.what());
+    } catch (...) {
+      report(ScanStep{"scan", "Обзор железа", "Сбой обзора без текста ошибки.", "warn"});
+      log_error("обзор упал без std::exception");
+    }
   }
   auto bridge = openrgb_.discover();
   report(ScanStep{"openrgb", "Мост OpenRGB", bridge.detail, bridge.connected ? "ok" : "info"});
