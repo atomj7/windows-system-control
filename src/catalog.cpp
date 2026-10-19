@@ -52,6 +52,11 @@ constexpr KnownHardware kKnown[] = {
     {0x0416, 0xA100, "Lian Li", "UNI FAN Hub", "fan_controller", "identified", 4, 4, false},
     {0x0416, 0xA101, "Lian Li", "UNI FAN Hub", "fan_controller", "identified", 4, 4, false},
     {0x0416, 0xA102, "Lian Li", "UNI FAN Hub", "fan_controller", "identified", 4, 4, false},
+
+    {0x1532, 0x0555, "Razer", "BlackShark V2 Pro", "peripheral", "identified", 0, 0, false},
+    {0x1532, 0x007E, "Razer", "Mouse Dock", "peripheral", "identified", 0, 0, false},
+    {0x1532, 0x007B, "Razer", "Viper Ultimate", "peripheral", "identified", 0, 0, false},
+    {0x3151, 0x4015, "Yichip", "Клавиатура RGB", "peripheral", "identified", 0, 0, false},
 };
 
 struct VendorEntry {
@@ -63,6 +68,7 @@ constexpr VendorEntry kVendors[] = {
     {0x1B1C, "Corsair"}, {0x1E71, "NZXT"},      {0x048D, "ITE"},         {0x0B05, "ASUS"},
     {0x1462, "MSI"},     {0x26CE, "ASRock"},    {0x2516, "Cooler Master"}, {0x0416, "Lian Li"},
     {0x1532, "Razer"},   {0x1038, "SteelSeries"}, {0x046D, "Logitech"},  {0x0DB0, "MSI"},
+    {0x3151, "Yichip"},
 };
 
 }  // namespace
@@ -82,6 +88,13 @@ const char* vendor_from_vid(uint16_t vid) {
 }
 
 bool is_lighting_vendor(uint16_t vid) { return vendor_from_vid(vid) != nullptr; }
+
+bool catalog_is_studio_device(const KnownHardware& known) {
+  const std::string kind = known.kind;
+  if (kind == "peripheral") return false;
+  if (kind == "fan_controller" || kind == "cooler" || kind == "motherboard") return true;
+  return known.rgbChannels > 0 || known.fanChannels > 0;
+}
 
 bool looks_like_lighting(std::string_view name) {
   static constexpr const char* kWords[] = {"rgb",     "led",      "aura",     "fusion", "mystic", "polychrome",

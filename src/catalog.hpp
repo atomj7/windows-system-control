@@ -20,4 +20,5 @@ const KnownHardware* find_known_device(uint16_t vid, uint16_t pid);
 const char* vendor_from_vid(uint16_t vid);
 bool is_lighting_vendor(uint16_t vid);
 bool looks_like_lighting(std::string_view name);
+bool catalog_is_studio_device(const KnownHardware& known);
 std::string guess_kind_from_name(std::string_view name);

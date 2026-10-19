@@ -1,3 +1,4 @@
+#include "catalog.hpp"
 #include "curve.hpp"
 #include "engine.hpp"
 #include "ipc.hpp"
@@ -126,6 +127,17 @@ void test_orgb() {
   expect(!orgb_has_effect(controller.modes, "wave"), "missing wave");
 }
 
+void test_catalog() {
+  const KnownHardware* viper = find_known_device(0x1532, 0x007B);
+  expect(viper && std::string(viper->name).find("Viper") != std::string::npos, "razer viper named");
+  expect(viper && !catalog_is_studio_device(*viper), "mouse stays off the studio rail");
+  const KnownHardware* keys = find_known_device(0x3151, 0x4015);
+  expect(keys && !catalog_is_studio_device(*keys), "yichip keyboard is not a fan hub");
+  const KnownHardware* kraken = find_known_device(0x1E71, 0x3012);
+  expect(kraken && catalog_is_studio_device(*kraken), "nzxt cooler stays on the rail");
+  expect(find_known_device(0x048D, 0x8297) && catalog_is_studio_device(*find_known_device(0x048D, 0x8297)), "fusion stays on the rail");
+}
+
 void test_engine() {
   std::filesystem::remove_all("/tmp/helios-test");
   Engine engine(std::make_unique<MockPlatform>(std::chrono::milliseconds(0)), "/tmp/helios-test");
@@ -209,6 +221,7 @@ int main() {
   test_curve();
   test_json();
   test_orgb();
+  test_catalog();
   test_engine();
   test_ipc();
   if (failures) {

@@ -752,7 +752,10 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
       memory.name = part.empty() ? "Модули памяти" : part;
       memory.connection = std::to_string(modules.size()) + " модул.";
       if (!field(modules[0], "Speed").empty()) memory.connection += " · " + field(modules[0], "Speed") + " МТ/с";
-      memory.note = "Подсветка планок почти никогда не видна как отдельное USB-устройство. Её отдаёт контроллер платы или OpenRGB.";
+      memory.note =
+          contains_ci(memory.name, "rgb")
+              ? "RGB на планках идёт по SMBus, не по USB. Helios зажжёт их, если запущен SDK-сервер OpenRGB на порту 6742."
+              : "Подсветка планок почти никогда не видна как отдельное USB-устройство. Её отдаёт контроллер платы или OpenRGB.";
       devices.push_back(std::move(memory));
     }
     auto disks = wmi.query(L"ROOT\\CIMV2", L"SELECT Model, Size FROM Win32_DiskDrive", {L"Model", L"Size"});
@@ -873,14 +876,15 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
     const bool hub = contains_ci(hit.name, "hub") || contains_ci(hit.name, "концентратор");
     const KnownHardware* known = find_known_device(hit.vid, hit.pid);
     const bool iteController = hit.vid == 0x048D && hit.pid != 0x1234;
-    const bool interesting = known || iteController || (is_lighting_vendor(hit.vid) && looks_like_lighting(hit.name));
+    const bool interesting =
+        (known && catalog_is_studio_device(*known)) || iteController || (is_lighting_vendor(hit.vid) && looks_like_lighting(hit.name));
     if (hub && !interesting) {
       ++hubs;
       continue;
     }
     BusDevice bus;
-    bus.name = hit.name.empty() ? hex4(hit.vid) + ":" + hex4(hit.pid) : hit.name;
-    bus.vendor = vendor_from_vid(hit.vid) ? vendor_from_vid(hit.vid) : "";
+    bus.name = known ? known->name : (hit.name.empty() ? hex4(hit.vid) + ":" + hex4(hit.pid) : hit.name);
+    bus.vendor = known ? known->vendor : (vendor_from_vid(hit.vid) ? vendor_from_vid(hit.vid) : "");
     bus.vid = hit.vid;
     bus.pid = hit.pid;
     bus.promoted = interesting;
@@ -917,6 +921,17 @@ std::vector<Device> WindowsPlatform::scan(const ScanReport& report) {
   report(ScanStep{"usb", "USB", "Устройств: " + std::to_string(usb.size()) + ", хабы скрыты: " + std::to_string(hubs) +
                                     ", подсветка и охлаждение: " + std::to_string(promoted),
                   usb.empty() ? "warn" : "ok"});
+
+  Device* board = nullptr;
+  for (auto& device : devices) {
+    if (device.id == "board") board = &device;
+  }
+  if (board && board->backend != "fusion") {
+    board->note =
+        "USB ITE 048D (RGB Fusion) на этой машине нет. Колодка RGB на B450M DS3H идёт через SuperIO — нужен открытый PawnIO. "
+        "Хаб корпусных вентиляторов с ИК-пультом в USB не попал: на шине периферия (Razer, клавиатура, Bluetooth, Wi‑Fi), не контроллер "
+        "подсветки. Если у хаба нет кабеля USB в системник, им управляет только пульт.";
+  }
 
   sample_cpu();
   for (auto& device : devices) {
